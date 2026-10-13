@@ -1,0 +1,26 @@
+#!/bin/bash
+# Build Omaread and install it for the current user.
+#
+#   bin/install            build, then install to ~/.local
+#   bin/install --default  also make Omaread the default app for EPUBs
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+APP_ID=io.github.sarrietav_dev.Omaread
+PREFIX="${XDG_DATA_HOME:-$HOME/.local/share}"
+BIN="$HOME/.local/bin"
+
+cargo build --release
+
+install -Dm755 target/release/omaread "$BIN/omaread"
+install -Dm644 "data/$APP_ID.desktop" "$PREFIX/applications/$APP_ID.desktop"
+install -Dm644 "data/$APP_ID.svg" "$PREFIX/icons/hicolor/scalable/apps/$APP_ID.svg"
+update-desktop-database "$PREFIX/applications" 2>/dev/null || true
+gtk-update-icon-cache -q "$PREFIX/icons/hicolor" 2>/dev/null || true
+
+if [[ "${1:-}" == "--default" ]]; then
+  xdg-mime default "$APP_ID.desktop" application/epub+zip
+  echo "Omaread now opens EPUB files."
+fi
+
+echo "Installed omaread to $BIN. Run it from the launcher or with: omaread [book.epub]"

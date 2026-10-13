@@ -3,5 +3,9 @@
 //! tested on its own.
 
 pub mod color;
+pub mod config;
+pub mod db;
+pub mod epub;
+pub mod library;
 pub mod style;
 pub mod theme;

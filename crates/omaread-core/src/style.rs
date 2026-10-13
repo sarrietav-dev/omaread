@@ -116,9 +116,87 @@ window.omaread * {{ border-radius: 0; }}
   font-size: {body_small}px;
 }}
 .toast.error {{ border-color: {urgent}; }}
+
+/* Library */
+.library-rail-scroller {{
+  min-width: {rail}px;
+  border-right: {hairline}px solid {rule};
+}}
+.library-rail {{ background: none; padding: {sm}px 0; }}
+.library-rail row.shelf-row {{
+  padding: {xs}px {row_x}px;
+  font-size: {body_small}px;
+  color: {muted};
+  border: {nbw}px solid transparent;
+}}
+.library-rail row.shelf-row:hover {{ background-color: {hover_fill}; }}
+.library-rail row.shelf-row:selected {{
+  background-color: {selected_fill};
+  color: {accent_text};
+}}
+.library-rail row.shelf-row.special {{ color: {fg}; }}
+.library-rail row.shelf-row.special:selected {{ color: {accent_text}; }}
+.library-rail .count {{ font-size: {caption}px; color: {muted}; font-feature-settings: "tnum"; }}
+
+.library-header {{
+  padding: {md}px {row_x}px;
+  border-bottom: {hairline}px solid {rule};
+  font-size: {body_small}px;
+}}
+.library-title {{ color: {fg}; }}
+.library-hint {{ color: {muted}; font-size: {caption}px; }}
+.library-filter {{
+  margin: {md}px {row_x}px 0;
+  padding: {xs}px {md}px;
+  background-color: {normal_fill};
+  border: {hairline}px solid {accent};
+  color: {fg};
+  font-size: {body_small}px;
+  min-height: 0;
+  box-shadow: none;
+  outline: none;
+}}
+.library-empty {{ color: {muted}; font-size: {body_small}px; }}
+
+gridview.library-grid {{ background: none; padding: {lg}px {sm}px; }}
+gridview.library-grid > child {{
+  padding: {lg}px;
+  margin: {xs}px;
+  border: {hbw}px solid transparent;
+}}
+gridview.library-grid > child:hover {{ background-color: {hover_fill}; }}
+gridview.library-grid > child:selected {{
+  background-color: {selected_fill};
+  border-color: {accent};
+}}
+.book .cover {{ background-color: {surface}; }}
+.book .cover-placeholder {{
+  font-size: {body_small}px;
+  color: {muted};
+  padding: {lg}px;
+}}
+.book .book-title {{ font-size: {body_small}px; color: {fg}; }}
+.book .book-author {{ font-size: {caption}px; color: {muted}; }}
+.book.unreadable .book-author {{ color: {urgent}; }}
+.book.unreadable .cover {{ opacity: 0.5; }}
+progressbar.book-progress > trough {{
+  min-height: {progress}px;
+  background-color: {bg_alpha};
+  border-radius: 0;
+}}
+progressbar.book-progress > trough > progress {{
+  min-height: {progress}px;
+  background-color: {accent};
+  border-radius: 0;
+}}
 "#,
         muted = t.muted,
         accent = t.accent,
+        surface = t.surface,
+        bg_alpha = bg.alpha(0.6),
+        xs = t.space(3.0),
+        rail = t.space(200.0),
+        progress = t.space(3.0).max(2),
         accent_text = t.accent.lifted(bg, fg, 4.5),
         urgent = t.urgent,
         rule = fg.alpha(c.normal_border_alpha * 0.5),

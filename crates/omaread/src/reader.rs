@@ -40,6 +40,10 @@ pub enum Event {
         text: String,
         lang: Option<String>,
     },
+    /// Not from the page: its process died. `gave_up` when it kept dying and
+    /// the book was closed rather than reopened again.
+    #[serde(skip)]
+    PageCrashed { gave_up: bool },
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]
@@ -88,7 +92,13 @@ struct State {
     queued: Vec<String>,
     /// Where the reader is, so a crashed page comes back to the same place.
     last_cfi: Option<String>,
+    /// When the page last crashed, to stop reopening a book that crashes it.
+    crashes: Vec<std::time::Instant>,
 }
+
+/// More crashes than this within [`CRASH_WINDOW`] and the book is closed.
+const MAX_CRASHES: usize = 2;
+const CRASH_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
 
 impl Reader {
     pub fn new(on_event: impl Fn(Event) + 'static) -> Reader {
@@ -178,9 +188,22 @@ impl Reader {
 
         reader.view.connect_web_process_terminated({
             let reader = reader.clone();
+            let on_event = on_event.clone();
             move |_, reason| {
-                eprintln!("omaread: the page process ended ({reason:?}); reloading");
-                reader.reload();
+                let gave_up = {
+                    let mut state = reader.state.borrow_mut();
+                    let now = std::time::Instant::now();
+                    state.crashes.retain(|t| now.duration_since(*t) < CRASH_WINDOW);
+                    state.crashes.push(now);
+                    state.crashes.len() > MAX_CRASHES
+                };
+                eprintln!("omaread: the page process ended ({reason:?}){}", if gave_up { "; giving up on this book" } else { "; reloading" });
+                if gave_up {
+                    reader.close();
+                } else {
+                    reader.reload();
+                }
+                on_event(Event::PageCrashed { gave_up });
             }
         });
 
@@ -195,8 +218,16 @@ impl Reader {
         self.call("open", &opts.to_string());
     }
 
-    pub fn has_book(&self) -> bool {
-        self.state.borrow().path.is_some()
+    /// Drop the book and start from a fresh page.
+    pub fn close(&self) {
+        {
+            let mut state = self.state.borrow_mut();
+            state.path = None;
+            state.last_cfi = None;
+            state.ready = false;
+            state.queued.clear();
+        }
+        self.view.load_uri(assets::READER_URI);
     }
 
     /// `globalThis.omaread.<method>(<json args>)`.

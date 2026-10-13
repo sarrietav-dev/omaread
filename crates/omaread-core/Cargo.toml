@@ -8,3 +8,11 @@ license.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
+zip = { version = "9", default-features = false, features = ["deflate"] }
+quick-xml = "0.42"
+rusqlite = { version = "0.40", features = ["bundled"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
+rayon = "1"
+
+[dev-dependencies]
+tempfile = "3"

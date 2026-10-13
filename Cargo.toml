@@ -17,3 +17,8 @@ toml = "1"
 opt-level = 3
 lto = "thin"
 codegen-units = 1
+
+# Dependencies (image decoding, zip, SQLite) optimized even in dev builds, so
+# a debug run scans the library at release speed.
+[profile.dev.package."*"]
+opt-level = 2

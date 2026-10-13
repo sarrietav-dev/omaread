@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=Omaread
+GenericName=E-book Reader
+Comment=Read EPUB books, Omarchy style
+Exec=omaread %F
+Icon=io.github.sarrietav_dev.Omaread
+Terminal=false
+Categories=Office;Viewer;
+MimeType=application/epub+zip;
+Keywords=book;ebook;epub;reader;
+StartupNotify=true
+StartupWMClass=io.github.sarrietav_dev.Omaread
+DBusActivatable=false
