@@ -12,6 +12,7 @@ mod settings_view;
 mod theming;
 mod toc_view;
 mod tts;
+mod voice_view;
 mod window;
 
 use std::cell::RefCell;

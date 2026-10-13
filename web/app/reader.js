@@ -6,6 +6,7 @@
 import { makeBook } from '../foliate-js/view.js'
 import { Overlayer } from '../foliate-js/overlayer.js'
 import * as CFI from '../foliate-js/epubcfi.js'
+import { BODY_PARAGRAPH, markPublisherHeadings } from './typography.js'
 
 const emit = msg => globalThis.webkit.messageHandlers.omaread.postMessage(JSON.stringify(msg))
 
@@ -137,7 +138,7 @@ const bookCSS = () => {
     [align="center"] { text-align: center; }
     [align="justify"] { text-align: justify; }
     :is(hgroup, header) p { text-align: unset; hyphens: unset; }
-    h1, h2, h3, h4, h5, h6, hgroup, th { text-wrap: balance; }
+    h1, h2, h3, h4, h5, h6, hgroup, th, p[data-omaread-display] { text-wrap: balance; }
     pre { white-space: pre-wrap !important; tab-size: 4; }
     aside[epub|type~="footnote"] { display: none; }
 `, `
@@ -145,12 +146,19 @@ const bookCSS = () => {
     html { font-size: ${prefs.font_size}px !important; }
     body { font-size: 1rem !important; }
     ${family ? `body, body *${notCode} { font-family: ${family} !important; }` : ''}
+    /* The chosen size wins on body text too, not just html/body: books that
+       set their own per-element size (0.8em, 12pt, …) would otherwise shrink
+       past it. Headings and captions keep their relative scale. */
+    ${BODY_PARAGRAPH}, li, blockquote, dd, dt, td, th { font-size: 1rem !important; }
     ` : ''}
-    p, li, blockquote, dd {
+    ${BODY_PARAGRAPH}, li, blockquote, dd {
         line-height: ${prefs.line_height}${imp};
         text-align: ${prefs.justify ? 'justify' : 'start'}${imp};
         hyphens: ${prefs.hyphenate ? 'auto' : 'manual'}${imp};
         -webkit-hyphens: ${prefs.hyphenate ? 'auto' : 'manual'}${imp};
+    }
+    p[data-omaread-display="title"], p[data-omaread-display="number"] {
+        text-align: center !important;
     }
     ${p ? `
     html {
@@ -197,7 +205,12 @@ const applyPalette = () => {
 const applyLayout = () => {
     const r = view?.renderer
     if (!r) return
-    r.setAttribute('flow', prefs.flow === 'scrolled' ? 'scrolled' : 'paginated')
+    const scrolled = prefs.flow === 'scrolled'
+    r.setAttribute('flow', scrolled ? 'scrolled' : 'paginated')
+    // In scrolled mode, glide page-to-page (j/k) instead of jumping. Leave
+    // paginated turns instant so they stay one-frame and holding j is snappy.
+    if (scrolled) r.setAttribute('animated', '')
+    else r.removeAttribute('animated')
     r.setAttribute('gap', '6%')
     r.setAttribute('margin', `${prefs.margin}px`)
     r.setAttribute('max-inline-size', `${prefs.max_width}px`)
@@ -289,6 +302,7 @@ const open = async file => {
         emit({ type: 'external-link', href: e.detail.href })
     })
     view.addEventListener('load', ({ detail: { doc, index } }) => {
+        markPublisherHeadings(doc, book.toc)
         doc.addEventListener('pointerup', () => setTimeout(() => {
             const sel = doc.getSelection()
             if (!sel.rangeCount || sel.isCollapsed) {

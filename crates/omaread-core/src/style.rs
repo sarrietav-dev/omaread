@@ -127,10 +127,44 @@ list.settings-list {{ background: none; font-size: {body_small}px; }}
 list.settings-list > row {{
   padding: {xs}px {sm}px;
   border: {nbw}px solid transparent;
+  border-left: {thick}px solid transparent;
 }}
-list.settings-list > row:selected {{ background-color: {selected_fill}; }}
+list.settings-list > row:hover {{ background-color: {hover_fill}; }}
+list.settings-list > row:selected {{
+  background-color: {selected_fill};
+  border-left-color: {accent};
+}}
 list.settings-list > row:selected .value {{ color: {accent_text}; }}
+list.settings-list .name {{ color: {fg}; }}
 list.settings-list .value {{ color: {muted}; font-feature-settings: "tnum"; }}
+list.settings-list .value.on, list.settings-list .value.action {{ color: {accent_text}; }}
+list.settings-list > row.settings-heading {{ padding: {md}px {sm}px 0; }}
+list.settings-list .settings-heading {{
+  font-size: {caption}px;
+  color: {muted};
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}}
+.scope-chips .chip {{
+  font-size: {caption}px;
+  color: {muted};
+  padding: 1px {sm}px;
+  border: {hairline}px solid {rule};
+}}
+.scope-chips .chip.active {{ color: {accent_text}; border-color: {accent}; }}
+progressbar.range > trough {{
+  min-height: {progress}px;
+  background-color: {bg_alpha};
+  border-radius: 0;
+}}
+progressbar.range > trough > progress {{
+  min-height: {progress}px;
+  background-color: {accent};
+  border-radius: 0;
+}}
+progressbar.range > text {{ color: transparent; }}
+.settings-note {{ font-size: {caption}px; color: {muted}; }}
+.scope-label {{ color: {muted}; }}
 
 listview.toc-list {{ background: none; font-size: {body_small}px; }}
 listview.toc-list > row {{
@@ -145,7 +179,51 @@ listview.toc-list > row:selected {{
 }}
 listview.toc-list expander {{ min-width: {body_small}px; color: {muted}; }}
 
-.selection-bar .excerpt {{ font-size: {body_small}px; color: {fg}; }}
+button.swatch {{
+  min-width: 22px;
+  min-height: 22px;
+  padding: 0;
+  margin: 0;
+  border: 1px solid {rule};
+  border-radius: 0;
+  background-image: none;
+  box-shadow: none;
+  outline: none;
+}}
+button.swatch.red {{ background-color: {hl_red}; }}
+button.swatch.yellow {{ background-color: {hl_yellow}; }}
+button.swatch.green {{ background-color: {hl_green}; }}
+button.swatch.blue {{ background-color: {hl_blue}; }}
+button.swatch.magenta {{ background-color: {hl_magenta}; }}
+button.swatch:hover {{ border-color: {fg}; }}
+button.swatch.active {{ border: 2px solid {accent_text}; box-shadow: 0 0 0 1px {bg}; }}
+entry.selection-note {{
+  background-color: {normal_fill};
+  color: {fg};
+  border: {hairline}px solid {rule};
+  padding: {xs}px {md}px;
+  min-height: 0;
+  box-shadow: none;
+  outline: none;
+  font-size: {body_small}px;
+}}
+entry.selection-note:focus {{ border-color: {accent}; }}
+.selection-bar button.action, .selection-bar button.primary {{
+  padding: {xs}px {md}px;
+  min-height: 0;
+  background-color: {normal_fill};
+  background-image: none;
+  border: {hairline}px solid {rule};
+  box-shadow: none;
+  outline: none;
+  font-size: {body_small}px;
+  color: {fg};
+}}
+.selection-bar button.action:hover, .selection-bar button.primary:hover {{
+  background-color: {hover_fill};
+  border-color: {hover_border};
+}}
+.selection-bar button.primary {{ color: {accent_text}; font-weight: bold; }}
 .card .excerpt {{ font-family: serif; font-size: {body}px; font-style: italic; color: {fg}; }}
 textview.note-text, textview.note-text text {{
   background-color: {normal_fill};
@@ -178,6 +256,38 @@ label.tts-bar {{
   margin-bottom: {panel_bottom}px;
   font-size: {caption}px;
 }}
+.voice-panel {{ min-width: {panel_w}px; }}
+.voice-status {{ font-size: {body_small}px; color: {fg}; }}
+.voice-status.playing {{ color: {accent_text}; }}
+.voice-status.paused {{ color: {muted}; }}
+.voice-section {{ font-size: {caption}px; color: {muted}; letter-spacing: 1px; text-transform: uppercase; }}
+.voice-speed {{ font-size: {body_small}px; }}
+.voice-speed .value {{ color: {muted}; font-feature-settings: "tnum"; }}
+.voice-panel button {{
+  min-height: 0;
+  min-width: 0;
+  padding: 0 {sm}px;
+  background-color: {normal_fill};
+  background-image: none;
+  border: {hairline}px solid {rule};
+  box-shadow: none;
+  outline: none;
+  color: {fg};
+}}
+.voice-panel button:hover {{ background-color: {hover_fill}; border-color: {hover_border}; }}
+list.voice-list {{ background: none; font-size: {body_small}px; }}
+list.voice-list > row {{
+  padding: {xs}px {sm}px;
+  border: {nbw}px solid transparent;
+  border-left: {thick}px solid transparent;
+}}
+list.voice-list > row:hover {{ background-color: {hover_fill}; }}
+list.voice-list > row:selected {{ background-color: {selected_fill}; }}
+list.voice-list > row.active {{ border-left-color: {accent}; }}
+list.voice-list > row:selected .voice-name {{ color: {accent_text}; }}
+list.voice-list .voice-name {{ color: {fg}; }}
+list.voice-list .voice-lang {{ color: {muted}; font-size: {caption}px; }}
+list.voice-list .voice-marker {{ color: {accent_text}; }}
 .lookup-tabs {{ font-size: {caption}px; color: {muted}; padding-bottom: {sm}px; border-bottom: {hairline}px solid {rule}; }}
 .lookup-tabs .tab.active {{ color: {accent_text}; }}
 .lookup-body {{ font-size: {body_small}px; color: {fg}; }}

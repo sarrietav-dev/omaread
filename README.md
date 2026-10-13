@@ -116,8 +116,8 @@ Reading
 | `/` | search the book (Alt+c case, Alt+w whole words, Alt+d accents) |
 | `n` / `N` | next / previous match (Esc clears) |
 | `:` | command palette: every command, fuzzy; also `:42%`, `:p 120`, `:ch 7`, `:export` |
-| select text | `h` highlight, `1`–`5` color, `a` note, `y` copy, `d` dictionary, `w` Wikipedia, `t` translate |
-| click a highlight | `a` note, `1`–`5` recolor, `x` delete |
+| select text | a card with colours, a note and `y` copy; `h` highlight, `1`–`5` color, `a` note, `d` dictionary, `w` Wikipedia, `t` translate |
+| click a highlight | `a` note, `1`–`5` recolor, `h` remove, `x` delete |
 | `s` | read aloud / pause (`]`/`[` next/previous sentence, `<`/`>` speed, `V` voice, Esc stop); on a selection, read from there |
 | `m` | bookmark this page (again to remove) |
 | `A` / `'` | highlights / bookmarks (`j`/`k`, Enter go, `a` note, `dd` delete) |

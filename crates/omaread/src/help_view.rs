@@ -35,12 +35,14 @@ const SECTIONS: &[(&str, &[(&str, &str)])] = &[
     (
         "Selection",
         &[
-            ("h", "highlight"),
+            ("h", "highlight / remove it"),
             ("1 – 5", "highlight colour"),
             ("a", "add a note"),
             ("y", "copy"),
+            ("x", "remove a highlight"),
             ("d / w / t", "dictionary / Wikipedia / translate"),
             ("s", "read from here"),
+            ("mouse", "the card: colour, note, copy"),
         ],
     ),
     (
@@ -49,7 +51,7 @@ const SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("s", "play / pause"),
             ("] / [", "next / previous sentence"),
             ("> / <", "faster / slower"),
-            ("V", "next voice"),
+            ("V", "voices"),
             ("esc", "stop"),
         ],
     ),

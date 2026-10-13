@@ -210,7 +210,9 @@ impl Reader {
             .enable_back_forward_navigation_gestures(false)
             .enable_html5_local_storage(false)
             .enable_html5_database(false)
-            .enable_smooth_scrolling(false)
+            // Smooth wheel/trackpad scrolling in scrolled mode; without it each
+            // notch jumps and feels hard next to Foliate.
+            .enable_smooth_scrolling(true)
             .serif_font_family("Literata")
             .default_font_family("Literata")
             .default_font_size(18)

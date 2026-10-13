@@ -17,11 +17,11 @@ use omaread_core::prefs::ReaderPrefs;
 use omaread_core::speed::{ReadingSpeed, format_minutes};
 use omaread_core::theme::Theme;
 
-use crate::annotations_view::{AnnotationsPanel, NoteEditor, SelectionBar};
+use crate::annotations_view::{AnnotationsPanel, NoteEditor, SelectionAction, SelectionBar, SelectionInfo};
 use crate::help_view::HelpView;
 use crate::keys::{Action, Context, Keymap};
 use crate::library_view::LibraryView;
-use crate::reader::{Event, Location, Reader, Selection, Sentence};
+use crate::reader::{Event, Location, Reader, Rect, Selection, Sentence};
 use crate::tts::{self, Tts};
 use crate::lookup_view::LookupView;
 use crate::palette::{Palette, Run};
@@ -30,6 +30,7 @@ use crate::service::Service;
 use crate::settings_view::{Scope, SettingsView};
 use crate::toc_view::{TocItem, TocView};
 use crate::theming::Theming;
+use crate::voice_view::{VoiceAction, VoicePanel, VoiceState};
 
 const LIBRARY: &str = "library";
 const READER: &str = "reader";
@@ -60,6 +61,8 @@ pub struct Window {
     tts: Tts,
     speech: RefCell<Option<Speech>>,
     tts_bar: gtk::Label,
+    /// The voice panel: the list of voices and the pace.
+    voice: Rc<VoicePanel>,
     /// Voices for the book's language, as speech-dispatcher lists them.
     voices: RefCell<Vec<omaread_core::ssip::Voice>>,
     tts_rate: Cell<i32>,
@@ -205,6 +208,14 @@ impl Window {
         let lookup = LookupView::new(config.lookup.providers());
         let (lookup_tx, lookup_rx) = async_channel::unbounded::<(usize, String, Result<LookupResult, String>)>();
         let search = SearchView::new();
+        let voice = VoicePanel::new({
+            let with_window = with_window.clone();
+            move |action| {
+                if let Some(win) = with_window() {
+                    win.on_voice_action(action);
+                }
+            }
+        });
         let settings = SettingsView::new({
             let with_window = with_window.clone();
             move |scope, prefs| {
@@ -220,8 +231,16 @@ impl Window {
         reader_overlay.add_overlay(&search.root);
         reader_overlay.add_overlay(&lookup.root);
         reader_overlay.add_overlay(&tts_bar);
+        reader_overlay.add_overlay(&voice.root);
         reader_overlay.add_overlay(&settings.root);
-        let selection_bar = SelectionBar::new();
+        let selection_bar = SelectionBar::new({
+            let with_window = with_window.clone();
+            move |action| {
+                if let Some(win) = with_window() {
+                    win.on_selection_action(action);
+                }
+            }
+        });
         let note_editor = NoteEditor::new();
         let annotations_panel = AnnotationsPanel::new();
         reader_overlay.add_overlay(&annotations_panel.root);
@@ -268,6 +287,7 @@ impl Window {
             tts,
             speech: RefCell::default(),
             tts_bar,
+            voice,
             voices: RefCell::default(),
             tts_rate: Cell::new(0),
             tts_voice: RefCell::default(),
@@ -452,6 +472,7 @@ impl Window {
         self.page.take();
         self.last_location.take();
         self.settings.close();
+        self.voice.close();
         self.book_prefs.replace(
             self.db
                 .as_ref()
@@ -493,6 +514,7 @@ impl Window {
             self.library.update_book(book);
         }
         self.settings.close();
+        self.voice.close();
         self.book_prefs.take();
         self.reader.close();
         if self.theming.borrow_mut().set_book_theme(None) {
@@ -514,6 +536,8 @@ impl Window {
             Context::Search
         } else if self.lookup.is_open() {
             Context::Lookup
+        } else if self.voice.is_open() {
+            Context::Voice
         } else if self.settings.is_open() {
             Context::Settings
         } else if self.annotations_panel.is_open() {
@@ -556,15 +580,8 @@ impl Window {
                 }
             }
             Event::AnnotationClick { cfi, rect } => {
-                let found = self.annotations.borrow().iter().find(|a| a.cfi == cfi && a.kind == Kind::Highlight).cloned();
-                if let Some(a) = found {
-                    let note = if a.note.trim().is_empty() { String::new() } else { format!("\n\n{}", a.note.trim()) };
-                    self.selection_bar.show(
-                        &format!("{}{note}", a.text.trim()),
-                        "a note   1–5 color   x delete   y copy   esc",
-                        rect,
-                        self.page_size(),
-                    );
+                if let Some(a) = self.highlight_at(&cfi) {
+                    self.show_card(&a.note, Some(&a.color), true, rect);
                     self.focus.replace(Some(Focus::Highlight(a.id)));
                 }
             }
@@ -781,6 +798,7 @@ impl Window {
     }
 
     fn open_settings(&self) {
+        self.voice.close();
         let scope = if self.book_prefs.borrow().is_some() { Scope::ThisBook } else { Scope::AllBooks };
         self.settings.open(&self.effective_prefs(), scope);
     }
@@ -924,12 +942,14 @@ impl Window {
                     s.seq += 1;
                 }
                 self.tts.send(tts::Command::Stop);
+                self.open_voice();
                 self.update_tts_bar();
             }
             Some(false) if !from_selection => {
                 if let Some(s) = self.speech.borrow_mut().as_mut() {
                     s.playing = true;
                 }
+                self.open_voice();
                 self.speak_current();
             }
             Some(_) => {
@@ -955,6 +975,8 @@ impl Window {
         self.speech.replace(Some(Speech { playing: true, sentences: Vec::new(), index: 0, seq }));
         self.close_selection();
         self.reader.call("ttsStart", &serde_json::json!({ "fromSelection": from_selection }).to_string());
+        // Reading aloud opens the controls: voice and pace are right there.
+        self.open_voice();
         self.update_tts_bar();
     }
 
@@ -1005,6 +1027,7 @@ impl Window {
             self.reader.call("ttsStop", "");
         }
         self.tts_bar.set_visible(false);
+        self.refresh_voice_panel();
     }
 
     fn change_rate(&self, delta: i32) {
@@ -1023,6 +1046,7 @@ impl Window {
     }
 
     fn next_voice(&self) {
+        eprintln!("omaread: DEBUG next_voice n={}", self.voices.borrow().len());
         let voices = self.voices.borrow().clone();
         if voices.is_empty() {
             self.tts.send(tts::Command::ListVoices);
@@ -1030,7 +1054,11 @@ impl Window {
         }
         let current = self.tts_voice.borrow().clone();
         let i = voices.iter().position(|v| Some(&v.name) == current.as_ref()).map(|i| (i + 1) % voices.len()).unwrap_or(0);
-        let voice = voices[i].name.clone();
+        self.set_voice(voices[i].name.clone());
+    }
+
+    /// Adopt a voice, at once if something's playing, and remember it.
+    fn set_voice(&self, voice: String) {
         self.tts.send(tts::Command::Voice(voice.clone()));
         if let Some(db) = &self.db {
             let _ = db.set_setting(TTS_VOICE, &voice);
@@ -1043,8 +1071,61 @@ impl Window {
         self.update_tts_bar();
     }
 
+    // --- The voice panel ----------------------------------------------------
+
+    fn open_voice(&self) {
+        eprintln!("omaread: DEBUG open_voice (was_open={})", self.voice.is_open());
+        self.toc.close();
+        self.search.close();
+        self.annotations_panel.close();
+        self.settings.close();
+        // Ask for the list if this is the first time; it arrives as an event.
+        if self.voices.borrow().is_empty() {
+            self.tts.send(tts::Command::ListVoices);
+        }
+        self.voice.open();
+        self.update_tts_bar();
+    }
+
+    /// Enter or a click in the panel: use the highlighted voice.
+    fn pick_voice(&self) {
+        if let Some(voice) = self.voice.selected() {
+            self.set_voice(voice.name);
+        }
+    }
+
+    fn on_voice_action(&self, action: VoiceAction) {
+        match action {
+            VoiceAction::Pick(name) => self.set_voice(name),
+            VoiceAction::Rate(delta) => self.change_rate(delta),
+            VoiceAction::Toggle => self.toggle_speech(false),
+            VoiceAction::Sentence(delta) => self.step_sentence(delta),
+        }
+    }
+
+    /// Bring the panel in step with what's playing, if it's up.
+    fn refresh_voice_panel(&self) {
+        if !self.voice.is_open() {
+            return;
+        }
+        let voices = self.voices.borrow().clone();
+        let current = self.tts_voice.borrow().clone();
+        self.voice.set_voices(&voices, current.as_deref());
+        let (state, sentence) = match self.speech.borrow().as_ref() {
+            None => (VoiceState::NotReading, None),
+            Some(s) => {
+                let sentence = (!s.sentences.is_empty()).then(|| (s.index, s.sentences.len()));
+                let state = if s.playing { VoiceState::Playing } else { VoiceState::Paused };
+                (state, sentence)
+            }
+        };
+        self.voice.set_state(state, sentence, self.tts_rate.get());
+    }
+
     fn update_tts_bar(&self) {
-        let Some(playing) = self.speech.borrow().as_ref().map(|s| s.playing) else {
+        self.refresh_voice_panel();
+        let speech = self.speech.borrow();
+        let Some(speech) = speech.as_ref() else {
             self.tts_bar.set_visible(false);
             return;
         };
@@ -1056,17 +1137,20 @@ impl Window {
             .unwrap_or_else(|| "default voice".into());
         let rate = self.tts_rate.get();
         let speed = if rate == 0 { "normal speed".to_string() } else { format!("speed {rate:+}") };
-        let state = if playing { "Reading aloud" } else { "Paused" };
-        let toggle = if playing { "s pause" } else { "s resume" };
+        let state = if speech.playing { "Reading aloud" } else { "Paused" };
+        let place = if speech.sentences.is_empty() { String::new() } else { format!(" {}/{}", speech.index + 1, speech.sentences.len()) };
+        let toggle = if speech.playing { "s pause" } else { "s resume" };
         self.tts_bar.set_label(&format!(
-            "{state}  ·  {voice}  ·  {speed}      {toggle}   ] next   [ back   < > speed   V voice   esc stop"
+            "{state}{place}  ·  {voice}  ·  {speed}      {toggle}   V voices   esc stop"
         ));
-        self.tts_bar.set_visible(true);
+        // The panel is the fuller view: when it's up, the bar would only repeat it.
+        self.tts_bar.set_visible(!self.voice.is_open());
     }
 
     fn open_search(&self) {
         self.toc.close();
         self.annotations_panel.close();
+        self.voice.close();
         self.search.open();
     }
 
@@ -1213,13 +1297,93 @@ impl Window {
         if selection.text.trim().is_empty() {
             return;
         }
-        self.selection_bar.show(
-            &selection.text,
-            &format!("h highlight   1–5 color   a note   y copy   {}   esc", self.lookup_hint()),
-            selection.rect,
-            self.page_size(),
-        );
+        // A selection that lands exactly on a highlight opens as that
+        // highlight, so `h` toggles it off instead of stacking a second one.
+        let existing = self.highlight_at(&selection.cfi);
+        let (note, color) = match &existing {
+            Some(a) => (a.note.as_str(), Some(a.color.as_str())),
+            None => ("", None),
+        };
+        self.show_card(note, color, existing.is_some(), selection.rect);
         self.focus.replace(Some(Focus::Text(selection)));
+    }
+
+    /// The highlight drawn at exactly this CFI, if any.
+    fn highlight_at(&self, cfi: &str) -> Option<Annotation> {
+        self.annotations.borrow().iter().find(|a| a.kind == Kind::Highlight && a.cfi == cfi).cloned()
+    }
+
+    /// Fill and place the card over the book.
+    fn show_card(&self, note: &str, color: Option<&str>, existing: bool, rect: Option<Rect>) {
+        let hint = if existing {
+            "1–5 recolor   h remove   a note   y copy   x delete   esc".to_string()
+        } else {
+            format!("1–5 color   h highlight   a note   y copy   {}   esc", self.lookup_hint())
+        };
+        self.selection_bar.show(SelectionInfo { note, color, existing, hint: &hint, rect }, self.page_size());
+    }
+
+    /// A click in the selection card.
+    fn on_selection_action(&self, action: SelectionAction) {
+        match action {
+            SelectionAction::Color(i) => self.color(Some(i)),
+            SelectionAction::Toggle => self.toggle_highlight(),
+            SelectionAction::Note(text) => self.note_selection(&text),
+            SelectionAction::Copy => self.copy_focus(),
+            SelectionAction::Delete => self.delete_focus(),
+        }
+    }
+
+    /// `h`: highlight a fresh selection, or remove the highlight the card is
+    /// about.
+    fn toggle_highlight(&self) {
+        let focus = self.focus.borrow().clone();
+        let existing = match &focus {
+            Some(Focus::Highlight(id)) => Some(*id),
+            Some(Focus::Text(s)) => self.highlight_at(&s.cfi).map(|a| a.id),
+            None => None,
+        };
+        match existing {
+            Some(id) => {
+                self.remove(id);
+                self.close_selection();
+            }
+            None => self.color(None),
+        }
+    }
+
+    /// The note field in the card was saved.
+    fn note_selection(&self, note: &str) {
+        let focus = self.focus.borrow().clone();
+        match focus {
+            Some(Focus::Text(s)) => {
+                // Nothing to save yet; keep the card open.
+                if note.trim().is_empty() {
+                    return;
+                }
+                let color = self.last_color.borrow().clone();
+                self.highlight_from(&s, &color, note);
+            }
+            Some(Focus::Highlight(id)) => {
+                let found = self.annotations.borrow().iter().find(|a| a.id == id).cloned();
+                if let Some(mut a) = found {
+                    a.note = note.to_string();
+                    a.updated_at = library::now();
+                    self.store(a);
+                }
+            }
+            None => return,
+        }
+        self.close_selection();
+    }
+
+    /// `x` on a clicked highlight.
+    fn delete_focus(&self) {
+        let focus = self.focus.borrow().clone();
+        if let Some(Focus::Highlight(id)) = focus {
+            self.remove(id);
+            self.close_selection();
+        }
     }
 
     /// "d dictionary   w wikipedia   t translate", from the providers.
@@ -1252,11 +1416,13 @@ impl Window {
             None => self.last_color.borrow().clone(),
         };
         self.last_color.replace(color.clone());
+        // A note typed into the card is saved with the highlight.
+        let note = self.selection_bar.note();
         let focus = self.focus.take();
         self.selection_bar.hide();
         match focus {
             Some(Focus::Text(s)) => {
-                self.highlight_from(&s, &color, "");
+                self.highlight_from(&s, &color, &note);
             }
             Some(Focus::Highlight(id)) => {
                 let found = self.annotations.borrow().iter().find(|a| a.id == id).cloned();
@@ -1461,6 +1627,7 @@ impl Window {
 
     pub fn handle_key(&self, key: gtk::gdk::Key, mods: gtk::gdk::ModifierType) -> glib::Propagation {
         let context = self.context();
+        eprintln!("omaread: DEBUG key={key:?} context={context:?}");
 
         // Writing a note: Esc cancels, Ctrl+Enter or Ctrl+S saves.
         if self.note_editor.is_open() {
@@ -1472,6 +1639,17 @@ impl Window {
                 _ => return glib::Propagation::Proceed,
             }
             return glib::Propagation::Stop;
+        }
+
+        // The card's note field takes text; Esc closes the card.
+        if self.selection_bar.note_has_focus() {
+            return match key {
+                gtk::gdk::Key::Escape => {
+                    self.close_selection();
+                    glib::Propagation::Stop
+                }
+                _ => glib::Propagation::Proceed,
+            };
         }
 
         // The palette: Esc closes, arrows (and ctrl+n/p) choose, Enter runs.
@@ -1584,20 +1762,19 @@ impl Window {
             (Context::Reader, Action::ToggleBookmark) => self.toggle_bookmark(),
             (Context::Reader, Action::Highlights) => self.annotations_panel.open(Kind::Highlight, &self.annotations.borrow()),
             (Context::Reader, Action::Bookmarks) => self.annotations_panel.open(Kind::Bookmark, &self.annotations.borrow()),
-            (Context::Selection, Action::Highlight) => self.color(None),
+            (Context::Selection, Action::Highlight) => self.toggle_highlight(),
             (Context::Selection, Action::Color(i)) => self.color(Some(i)),
             (Context::Selection, Action::Note) => {
-                if let Some(target) = self.focus.borrow().clone() {
+                // Clone out of the RefCell before open_note() borrows it again:
+                // a `self.focus.borrow()` scrutinee would still be alive here
+                // and open_note()'s `focus.take()` would panic.
+                let target = self.focus.borrow().clone();
+                if let Some(target) = target {
                     self.open_note(target);
                 }
             }
             (Context::Selection, Action::Copy) => self.copy_focus(),
-            (Context::Selection, Action::Delete) => {
-                if let Some(Focus::Highlight(id)) = self.focus.borrow().clone() {
-                    self.remove(id);
-                }
-                self.close_selection();
-            }
+            (Context::Selection, Action::Delete) => self.delete_focus(),
             (Context::Selection, Action::Close) => self.close_selection(),
             (Context::Selection, Action::SpeakFrom) => self.toggle_speech(true),
             (Context::Reader, Action::Speak) => self.toggle_speech(false),
@@ -1606,6 +1783,20 @@ impl Window {
             (Context::Reader, Action::Faster) => self.change_rate(10),
             (Context::Reader, Action::Slower) => self.change_rate(-10),
             (Context::Reader, Action::NextVoice) => self.next_voice(),
+            (Context::Reader, Action::Voices) => self.open_voice(),
+            (Context::Voice, Action::Move(_, dy)) => self.voice.move_cursor(dy),
+            (Context::Voice, Action::Open) => self.pick_voice(),
+            (Context::Voice, Action::NextVoice) => self.next_voice(),
+            (Context::Voice, Action::Faster) => self.change_rate(10),
+            (Context::Voice, Action::Slower) => self.change_rate(-10),
+            (Context::Voice, Action::Speak) => self.toggle_speech(false),
+            (Context::Voice, Action::SentenceNext) => self.step_sentence(1),
+            (Context::Voice, Action::SentencePrev) => self.step_sentence(-1),
+            (Context::Voice, Action::Close) => {
+                self.voice.close();
+                self.update_tts_bar();
+                self.reader.view.grab_focus();
+            }
             (Context::Selection | Context::Lookup, Action::Lookup(key)) => self.look_up(key),
             (Context::Lookup, Action::Move(_, dy)) => self.lookup.scroll(dy),
             (Context::Lookup, Action::OpenLink) => {

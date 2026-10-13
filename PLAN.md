@@ -221,7 +221,7 @@ name = "Browser";    kind = "url"; key = "W"; url = "https://duckduckgo.com/?q={
 |---|---|
 | Reader | `j`/`l`/Space next page · `k`/`h`/Shift-Space prev · `J`/`L`/`K`/`H` next/prev chapter · `gg`/`G` start/end · `Ctrl-o`/`Ctrl-i` back/forward |
 | Panels | `t` TOC · `/` search · `n`/`N` hits · `'` bookmarks · `A` annotations · `i` status line · `,` settings · `:` palette · `?` help · `q`/Esc close panel / back to library |
-| Selection | `h` highlight · `1`–`5` color · `a` note · `y` copy · `d`/`w`/`t` lookup · `s` speak from here |
+| Selection | a card over the text: click a colour or note it; `h` highlight/remove · `1`–`5` color · `a` note · `y` copy · `d`/`w`/`t` lookup · `s` speak from here |
 | Page | `m` bookmark · `+`/`-`/`=` font size · `[c`/`]c` columns · `T` cycle theme (system/light/dark) · `F` fullscreen |
 | Library | `hjkl` move · Enter open · `/` filter · Tab shelves · `o` sort · `gr` rescan |
 

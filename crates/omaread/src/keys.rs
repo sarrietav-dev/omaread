@@ -50,6 +50,8 @@ pub enum Action {
     Faster,
     Slower,
     NextVoice,
+    /// Open the voice panel.
+    Voices,
     /// A lookup provider's key, from a selection or the lookup card.
     Lookup(char),
     OpenLink,
@@ -83,6 +85,8 @@ pub enum Context {
     Search,
     /// The lookup card is open.
     Lookup,
+    /// The voice panel is open over the book.
+    Voice,
     /// The `?` help is open.
     Help,
 }
@@ -123,6 +127,7 @@ pub const NAMED: &[(&str, Action)] = &[
     ("faster", Action::Faster),
     ("slower", Action::Slower),
     ("next_voice", Action::NextVoice),
+    ("voices", Action::Voices),
     ("open_link", Action::OpenLink),
     ("open", Action::Open),
     ("filter", Action::Filter),
@@ -145,6 +150,7 @@ pub fn context_by_name(name: &str) -> Option<Context> {
         "annotations" => Context::Annotations,
         "search" => Context::Search,
         "lookup" => Context::Lookup,
+        "voice" => Context::Voice,
         "help" => Context::Help,
         _ => return None,
     })
@@ -241,6 +247,7 @@ impl Keymap {
                 Context::Annotations => annotations(key, ch),
                 Context::Search => search(key, ch),
                 Context::Lookup => lookup(key, ch),
+                Context::Voice => voice(key, ch),
                 Context::Help => help(key, ch),
             }
         };
@@ -410,7 +417,7 @@ fn reader(key: Key, ch: Option<char>, shift: bool) -> Option<Action> {
         '[' => Some(Action::SentencePrev),
         '>' => Some(Action::Faster),
         '<' => Some(Action::Slower),
-        'V' => Some(Action::NextVoice),
+        'V' => Some(Action::Voices),
         'A' => Some(Action::Highlights),
         '\'' => Some(Action::Bookmarks),
         'q' => Some(Action::Close),
@@ -469,6 +476,29 @@ fn lookup(key: Key, ch: Option<char>) -> Option<Action> {
         'y' => Some(Action::Copy),
         'q' => Some(Action::Close),
         c if c.is_alphanumeric() => Some(Action::Lookup(c)),
+        _ => None,
+    }
+}
+
+fn voice(key: Key, ch: Option<char>) -> Option<Action> {
+    match key {
+        Key::Up => return Some(Action::Move(0, -1)),
+        Key::Down => return Some(Action::Move(0, 1)),
+        Key::Return | Key::KP_Enter => return Some(Action::Open),
+        Key::Escape => return Some(Action::Close),
+        _ => {}
+    }
+    match ch? {
+        'j' => Some(Action::Move(0, 1)),
+        'k' => Some(Action::Move(0, -1)),
+        'l' => Some(Action::Open),
+        '>' => Some(Action::Faster),
+        '<' => Some(Action::Slower),
+        ']' => Some(Action::SentenceNext),
+        '[' => Some(Action::SentencePrev),
+        's' => Some(Action::Speak),
+        'V' => Some(Action::NextVoice),
+        'q' => Some(Action::Close),
         _ => None,
     }
 }
@@ -669,6 +699,20 @@ mod tests {
         assert_eq!(canonical("esc").as_deref(), Some("escape"));
         assert_eq!(canonical("F1").as_deref(), Some("f1"));
         assert_eq!(canonical("nonsense").as_deref(), None);
+    }
+
+    #[test]
+    fn v_opens_the_voices_and_the_panel_has_its_own_keys() {
+        let mut map = Keymap::default();
+        assert_eq!(press(&mut map, Context::Reader, 'V'), Some(Action::Voices));
+        assert_eq!(press(&mut map, Context::Voice, 'j'), Some(Action::Move(0, 1)));
+        assert_eq!(press(&mut map, Context::Voice, 'k'), Some(Action::Move(0, -1)));
+        assert_eq!(press(&mut map, Context::Voice, 'l'), Some(Action::Open));
+        let enter = Key::from_name("Return").unwrap();
+        assert_eq!(map.press(Context::Voice, enter, ModifierType::empty()), Some(Action::Open));
+        assert_eq!(press(&mut map, Context::Voice, 's'), Some(Action::Speak));
+        assert_eq!(press(&mut map, Context::Voice, 'V'), Some(Action::NextVoice));
+        assert_eq!(press(&mut map, Context::Voice, 'q'), Some(Action::Close));
     }
 
     #[test]

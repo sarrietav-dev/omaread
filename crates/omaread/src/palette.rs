@@ -51,7 +51,7 @@ pub fn reader_commands() -> Vec<Entry> {
         a("Previous sentence (reading aloud)", "[", SentencePrev),
         a("Read faster", ">", Faster),
         a("Read slower", "<", Slower),
-        a("Next voice", "V", NextVoice),
+        a("Voices", "V", Voices),
         a("Next search result", "n", NextHit),
         a("Previous search result", "N", PrevHit),
         l("Export highlights as Markdown", ":export", "export"),
