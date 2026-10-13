@@ -12,7 +12,7 @@ const SECTIONS: &[(&str, &[(&str, &str)])] = &[
         &[
             ("j l space →", "next page"),
             ("k h shift+space ←", "previous page"),
-            ("J / K", "next / previous chapter"),
+            ("J K / H L", "next / previous chapter"),
             ("gg / G", "start / end of the book"),
             ("ctrl+o / ctrl+i", "back / forward"),
         ],

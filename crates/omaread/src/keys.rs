@@ -270,6 +270,18 @@ pub fn key_spec(key: Key, mods: ModifierType) -> String {
         Key::Page_Down => "page_down".to_string(),
         Key::Delete => "delete".to_string(),
         Key::BackSpace => "backspace".to_string(),
+        Key::F1 => "f1".to_string(),
+        Key::F2 => "f2".to_string(),
+        Key::F3 => "f3".to_string(),
+        Key::F4 => "f4".to_string(),
+        Key::F5 => "f5".to_string(),
+        Key::F6 => "f6".to_string(),
+        Key::F7 => "f7".to_string(),
+        Key::F8 => "f8".to_string(),
+        Key::F9 => "f9".to_string(),
+        Key::F10 => "f10".to_string(),
+        Key::F11 => "f11".to_string(),
+        Key::F12 => "f12".to_string(),
         _ => match key.to_unicode() {
             Some(c) => c.to_string(),
             None => return String::new(),
@@ -348,6 +360,18 @@ fn named_or_char(s: &str) -> Option<String> {
         "page_down" | "pagedown" | "pgdn" => "page_down",
         "delete" | "del" => "delete",
         "backspace" => "backspace",
+        "f1" => "f1",
+        "f2" => "f2",
+        "f3" => "f3",
+        "f4" => "f4",
+        "f5" => "f5",
+        "f6" => "f6",
+        "f7" => "f7",
+        "f8" => "f8",
+        "f9" => "f9",
+        "f10" => "f10",
+        "f11" => "f11",
+        "f12" => "f12",
         _ => return None,
     };
     Some(name.to_string())
@@ -366,8 +390,8 @@ fn reader(key: Key, ch: Option<char>, shift: bool) -> Option<Action> {
     match ch? {
         'j' | 'l' => Some(Action::NextPage),
         'k' | 'h' => Some(Action::PrevPage),
-        'J' => Some(Action::NextSection),
-        'K' => Some(Action::PrevSection),
+        'J' | 'L' => Some(Action::NextSection),
+        'K' | 'H' => Some(Action::PrevSection),
         'G' => Some(Action::Last),
         'i' => Some(Action::ToggleStatus),
         't' => Some(Action::Toc),
@@ -579,6 +603,15 @@ mod tests {
     }
 
     #[test]
+    fn shift_h_l_move_by_section_like_j_k() {
+        let mut map = Keymap::default();
+        assert_eq!(press(&mut map, Context::Reader, 'L'), Some(Action::NextSection));
+        assert_eq!(press(&mut map, Context::Reader, 'H'), Some(Action::PrevSection));
+        assert_eq!(press(&mut map, Context::Reader, 'J'), Some(Action::NextSection));
+        assert_eq!(press(&mut map, Context::Reader, 'K'), Some(Action::PrevSection));
+    }
+
+    #[test]
     fn gg_goes_to_the_start_and_g_alone_waits() {
         let mut map = Keymap::default();
         assert_eq!(press(&mut map, Context::Reader, 'g'), None);
@@ -624,6 +657,7 @@ mod tests {
         assert_eq!(spec("o", ModifierType::CONTROL_MASK), "ctrl+o");
         assert_eq!(spec("Return", ModifierType::empty()), "enter");
         assert_eq!(spec("Page_Down", ModifierType::empty()), "page_down");
+        assert_eq!(spec("F1", ModifierType::empty()), "f1");
     }
 
     #[test]
@@ -633,6 +667,7 @@ mod tests {
         assert_eq!(canonical("Ctrl+O").as_deref(), Some("ctrl+o"));
         assert_eq!(canonical("Return").as_deref(), Some("enter"));
         assert_eq!(canonical("esc").as_deref(), Some("escape"));
+        assert_eq!(canonical("F1").as_deref(), Some("f1"));
         assert_eq!(canonical("nonsense").as_deref(), None);
     }
 

@@ -53,7 +53,7 @@ Reading
 |---|---|
 | `j` `l` Space → | next page |
 | `k` `h` Shift-Space ← | previous page |
-| `J` / `K` | next / previous chapter |
+| `J` `K` / `H` `L` | next / previous chapter |
 | `gg` / `G` | start / end of the book |
 | `Ctrl-o` / `Ctrl-i` | back / forward |
 | `t` | table of contents (`j`/`k` move, `h`/`l` fold, Enter go) |
