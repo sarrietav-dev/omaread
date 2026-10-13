@@ -115,7 +115,7 @@ impl HelpView {
             .spacing(8)
             .halign(gtk::Align::Center)
             .valign(gtk::Align::Center)
-            .width_request(640)
+            .width_request(760)
             .visible(false)
             .css_classes(["card", "help"])
             .build();
