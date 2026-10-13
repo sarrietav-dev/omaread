@@ -55,7 +55,7 @@ Reading
 | `/` | search the book (Alt+c case, Alt+w whole words, Alt+d accents) |
 | `n` / `N` | next / previous match (Esc clears) |
 | `:` | command palette: every command, fuzzy; also `:42%`, `:p 120`, `:ch 7`, `:export` |
-| select text | `h` highlight, `1`–`5` color, `a` note, `y` copy |
+| select text | `h` highlight, `1`–`5` color, `a` note, `y` copy, `d` dictionary, `w` Wikipedia, `t` translate |
 | click a highlight | `a` note, `1`–`5` recolor, `x` delete |
 | `m` | bookmark this page (again to remove) |
 | `A` / `'` | highlights / bookmarks (`j`/`k`, Enter go, `a` note, `dd` delete) |
@@ -75,6 +75,38 @@ book's theme.
 For hyphenation, install the dictionaries: `sudo pacman -S hyphen-en hyphen-es`.
 
 Your place in every book is saved as you read.
+
+Lookups come from Wiktionary, Wikipedia and Google Translate (Spanish ⇄
+English, picked from the text). Answers are cached for a month. Providers
+are configurable, including local programs (run without a shell) and web
+searches:
+
+```toml
+[[lookup.provider]]
+name = "Dictionary"
+kind = "builtin.wiktionary"
+key = "d"
+
+[[lookup.provider]]
+name = "Translate"
+kind = "builtin.translate"
+key = "t"
+pair = ["es", "en"]
+
+[[lookup.provider]]
+name = "Local"
+kind = "command"
+key = "D"
+command = ["sdcv", "-n", "{text}"]
+
+[[lookup.provider]]
+name = "Search"
+kind = "url"
+key = "s"
+url = "https://duckduckgo.com/?q={text}"
+```
+
+`omaread lookup d goroutine` prints what the card would show.
 
 Coming from Foliate? On first run Omaread brings over your reading
 positions, highlights, notes and bookmarks (`omaread import-foliate` does it

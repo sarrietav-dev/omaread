@@ -2,6 +2,7 @@ mod annotations_view;
 mod assets;
 mod keys;
 mod library_view;
+mod lookup_view;
 mod palette;
 mod reader;
 mod search_view;
@@ -24,6 +25,7 @@ fn main() -> glib::ExitCode {
     match args.get(1).map(String::as_str) {
         Some("scan") => return scan(),
         Some("import-foliate") => return import_foliate(),
+        Some("lookup") => return lookup(&args[2..]),
         _ => {}
     }
 
@@ -71,6 +73,46 @@ fn main() -> glib::ExitCode {
     });
 
     app.run()
+}
+
+/// `omaread lookup <key> <text…> [--lang xx]`: what the lookup card would show.
+fn lookup(args: &[String]) -> glib::ExitCode {
+    let (Some(key), rest) = (args.first(), &args[args.len().min(1)..]) else {
+        eprintln!("usage: omaread lookup <key> <text…> [--lang xx]");
+        return glib::ExitCode::FAILURE;
+    };
+    let mut lang = None;
+    let mut words = Vec::new();
+    let mut it = rest.iter();
+    while let Some(a) = it.next() {
+        if a == "--lang" {
+            lang = it.next().cloned();
+        } else {
+            words.push(a.clone());
+        }
+    }
+    let providers = omaread_core::config::Config::load().lookup.providers();
+    let Some(spec) = providers.iter().find(|p| p.key == *key) else {
+        let keys: Vec<String> = providers.iter().map(|p| format!("{} ({})", p.key, p.name)).collect();
+        eprintln!("no provider on key {key}; there are: {}", keys.join(", "));
+        return glib::ExitCode::FAILURE;
+    };
+    match omaread_core::lookup::run(spec, &words.join(" "), lang.as_deref()) {
+        Ok(r) => {
+            if !r.title.is_empty() {
+                println!("{}\n", r.title);
+            }
+            println!("{}", r.open.as_deref().unwrap_or(&r.body));
+            if let Some(url) = r.url {
+                println!("\n{url}");
+            }
+            glib::ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            glib::ExitCode::FAILURE
+        }
+    }
 }
 
 /// `omaread import-foliate`: bring Foliate's positions, highlights and

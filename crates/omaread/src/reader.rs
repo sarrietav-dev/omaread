@@ -74,7 +74,6 @@ pub enum Event {
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]
-#[allow(dead_code)] // `lang` is for lookups (M7)
 pub struct Selection {
     pub text: String,
     pub cfi: String,

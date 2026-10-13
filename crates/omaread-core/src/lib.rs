@@ -10,6 +10,7 @@ pub mod db;
 pub mod epub;
 pub mod fuzzy;
 pub mod library;
+pub mod lookup;
 pub mod prefs;
 pub mod speed;
 pub mod style;

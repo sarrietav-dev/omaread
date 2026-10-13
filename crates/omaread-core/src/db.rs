@@ -66,6 +66,16 @@ const MIGRATIONS: &[&str] = &[
         UNIQUE (identity, kind, cfi)
     );
     "#,
+    // 5: lookup answers, so a second look is instant and works offline
+    r#"
+    CREATE TABLE lookup_cache (
+        provider    TEXT NOT NULL,
+        query       TEXT NOT NULL,
+        result      TEXT NOT NULL,
+        created_at  INTEGER NOT NULL,
+        PRIMARY KEY (provider, query)
+    );
+    "#,
 ];
 
 pub struct Db {

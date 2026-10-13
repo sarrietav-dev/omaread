@@ -12,6 +12,7 @@ use omaread_core::db::{Db, Progress};
 use omaread_core::annotations::{self, Annotation, Kind};
 use omaread_core::command::{self, Command, ExportFormat};
 use omaread_core::library::{self, Book, Paths};
+use omaread_core::lookup::{self as lookups, LookupResult};
 use omaread_core::prefs::ReaderPrefs;
 use omaread_core::speed::{ReadingSpeed, format_minutes};
 use omaread_core::theme::Theme;
@@ -20,6 +21,7 @@ use crate::annotations_view::{AnnotationsPanel, NoteEditor, SelectionBar};
 use crate::keys::{Action, Context, Keymap};
 use crate::library_view::LibraryView;
 use crate::reader::{Event, Location, Reader, Selection};
+use crate::lookup_view::LookupView;
 use crate::palette::{Palette, Run};
 use crate::search_view::{Hit, SearchView};
 use crate::service::Service;
@@ -50,6 +52,9 @@ pub struct Window {
     toc: Rc<TocView>,
     toc_items: RefCell<Vec<TocItem>>,
     palette: Rc<Palette>,
+    lookup: Rc<LookupView>,
+    /// Lookup answers from worker threads: (provider, query, answer).
+    lookup_tx: async_channel::Sender<(usize, String, Result<LookupResult, String>)>,
     search: Rc<SearchView>,
     settings: Rc<SettingsView>,
     selection_bar: SelectionBar,
@@ -165,6 +170,8 @@ impl Window {
             }
         });
         let palette = Palette::new();
+        let lookup = LookupView::new(config.lookup.providers());
+        let (lookup_tx, lookup_rx) = async_channel::unbounded::<(usize, String, Result<LookupResult, String>)>();
         let search = SearchView::new();
         let settings = SettingsView::new({
             let with_window = with_window.clone();
@@ -179,6 +186,7 @@ impl Window {
         reader_overlay.add_overlay(&status.bar);
         reader_overlay.add_overlay(&toc.root);
         reader_overlay.add_overlay(&search.root);
+        reader_overlay.add_overlay(&lookup.root);
         reader_overlay.add_overlay(&settings.root);
         let selection_bar = SelectionBar::new();
         let note_editor = NoteEditor::new();
@@ -222,6 +230,8 @@ impl Window {
             toc,
             toc_items: RefCell::default(),
             palette,
+            lookup,
+            lookup_tx,
             search,
             settings,
             prefs: RefCell::new(
@@ -255,6 +265,18 @@ impl Window {
         if let Some(speed) = win.db.as_ref().and_then(|db| db.setting(SPEED_SETTING).ok().flatten()).and_then(|s| ReadingSpeed::from_setting(&s)) {
             win.speed.set(speed);
         }
+        glib::spawn_future_local({
+            let win = Rc::downgrade(&win);
+            async move {
+                while let Ok((index, query, result)) = lookup_rx.recv().await {
+                    let Some(win) = win.upgrade() else { break };
+                    if let (Ok(r), Some(db), Some(p)) = (&result, &win.db, win.lookup.providers().get(index)) {
+                        db.cache_lookup(&p.name, &query, r, library::now());
+                    }
+                    win.lookup.show(index, &query, result);
+                }
+            }
+        });
         win.palette.entry.connect_activate({
             let win = Rc::downgrade(&win);
             move |_| {
@@ -390,6 +412,7 @@ impl Window {
     /// Back to the library, keeping where we were.
     fn close_book(&self) {
         self.close_overlays();
+        self.lookup.close();
         self.save_progress();
         self.save_speed();
         self.toc.close();
@@ -419,6 +442,8 @@ impl Window {
             Context::Toc
         } else if self.search.is_open() {
             Context::Search
+        } else if self.lookup.is_open() {
+            Context::Lookup
         } else if self.settings.is_open() {
             Context::Settings
         } else if self.annotations_panel.is_open() {
@@ -708,6 +733,48 @@ impl Window {
         }
     }
 
+    /// Look the focused text up with the provider on `key`.
+    fn look_up(&self, key: char) {
+        let Some(index) = self.lookup.provider_for_key(key) else { return };
+        let (text, lang) = match self.focus.borrow().as_ref() {
+            Some(Focus::Text(s)) => (s.text.clone(), s.lang.clone()),
+            Some(Focus::Highlight(id)) => match self.annotations.borrow().iter().find(|a| a.id == *id) {
+                Some(a) => (a.text.clone(), self.current.borrow().as_ref().and_then(|c| c.book.language.clone())),
+                None => return,
+            },
+            // From the card itself: same text, another provider.
+            None if self.lookup.is_open() => self.lookup.query(),
+            None => return,
+        };
+        let lang = lang.or_else(|| self.current.borrow().as_ref().and_then(|c| c.book.language.clone()));
+        self.selection_bar.hide();
+        self.focus.take();
+        self.lookup_with(index, text, lang);
+    }
+
+    fn lookup_with(&self, index: usize, text: String, lang: Option<String>) {
+        let Some(spec) = self.lookup.providers().get(index).cloned() else { return };
+        // A `url` provider is just the browser.
+        if spec.kind == "url" {
+            match lookups::run(&spec, &text, lang.as_deref()) {
+                Ok(LookupResult { open: Some(url), .. }) => self.open_link(&url),
+                Ok(_) => {}
+                Err(e) => self.show_toast(&e, true),
+            }
+            return;
+        }
+        self.lookup.open(index, &text, lang.as_deref());
+        if let Some(cached) = self.db.as_ref().and_then(|db| db.cached_lookup(&spec.name, &text, library::now())) {
+            self.lookup.show(index, &text, Ok(cached));
+            return;
+        }
+        let tx = self.lookup_tx.clone();
+        std::thread::spawn(move || {
+            let result = lookups::run(&spec, &text, lang.as_deref());
+            let _ = tx.send_blocking((index, text, result));
+        });
+    }
+
     fn open_search(&self) {
         self.toc.close();
         self.annotations_panel.close();
@@ -859,11 +926,16 @@ impl Window {
         }
         self.selection_bar.show(
             &selection.text,
-            "h highlight   1–5 color   a note   y copy   esc",
+            &format!("h highlight   1–5 color   a note   y copy   {}   esc", self.lookup_hint()),
             selection.rect,
             self.page_size(),
         );
         self.focus.replace(Some(Focus::Text(selection)));
+    }
+
+    /// "d dictionary   w wikipedia   t translate", from the providers.
+    fn lookup_hint(&self) -> String {
+        self.lookup.providers().iter().map(|p| format!("{} {}", p.key, p.name.to_lowercase())).collect::<Vec<_>>().join("   ")
     }
 
     fn highlight_from(&self, s: &Selection, color: &str, note: &str) -> Option<Annotation> {
@@ -1222,6 +1294,24 @@ impl Window {
                 self.close_selection();
             }
             (Context::Selection, Action::Close) => self.close_selection(),
+            (Context::Selection | Context::Lookup, Action::Lookup(key)) => self.look_up(key),
+            (Context::Lookup, Action::Move(_, dy)) => self.lookup.scroll(dy),
+            (Context::Lookup, Action::OpenLink) => {
+                if let Some(url) = self.lookup.result().and_then(|r| r.url) {
+                    self.open_link(&url);
+                }
+            }
+            (Context::Lookup, Action::Copy) => {
+                if let Some(r) = self.lookup.result() {
+                    self.window.clipboard().set_text(&r.body);
+                    self.show_toast("Copied", false);
+                }
+            }
+            (Context::Lookup, Action::Close) => {
+                self.lookup.close();
+                self.reader.call("clearSelection", "");
+                self.reader.view.grab_focus();
+            }
             (Context::Annotations, Action::Move(_, dy)) => self.annotations_panel.move_cursor(dy),
             (Context::Annotations, Action::Last) => self.annotations_panel.move_cursor(i32::MAX / 2),
             (Context::Annotations, Action::First) => self.annotations_panel.move_cursor(i32::MIN / 2),

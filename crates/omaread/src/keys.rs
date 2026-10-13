@@ -34,6 +34,9 @@ pub enum Action {
     Note,
     Copy,
     Delete,
+    /// A lookup provider's key, from a selection or the lookup card.
+    Lookup(char),
+    OpenLink,
     // Library and panels
     Move(i32, i32),
     Open,
@@ -61,6 +64,8 @@ pub enum Context {
     Annotations,
     /// The search results have the keys.
     Search,
+    /// The lookup card is open.
+    Lookup,
 }
 
 #[derive(Default)]
@@ -115,6 +120,7 @@ impl Keymap {
             Context::Selection => selection(key, ch),
             Context::Annotations => annotations(key, ch),
             Context::Search => search(key, ch),
+            Context::Lookup => lookup(key, ch),
         }
     }
 }
@@ -183,6 +189,26 @@ fn selection(key: Key, ch: Option<char>) -> Option<Action> {
         'y' => Some(Action::Copy),
         'x' => Some(Action::Delete),
         'q' => Some(Action::Close),
+        // Anything else may be a lookup provider's key (d, w, t, …).
+        c if c.is_alphanumeric() => Some(Action::Lookup(c)),
+        _ => None,
+    }
+}
+
+fn lookup(key: Key, ch: Option<char>) -> Option<Action> {
+    match key {
+        Key::Escape => return Some(Action::Close),
+        Key::Up => return Some(Action::Move(0, -1)),
+        Key::Down => return Some(Action::Move(0, 1)),
+        _ => {}
+    }
+    match ch? {
+        'j' => Some(Action::Move(0, 1)),
+        'k' => Some(Action::Move(0, -1)),
+        'o' => Some(Action::OpenLink),
+        'y' => Some(Action::Copy),
+        'q' => Some(Action::Close),
+        c if c.is_alphanumeric() => Some(Action::Lookup(c)),
         _ => None,
     }
 }

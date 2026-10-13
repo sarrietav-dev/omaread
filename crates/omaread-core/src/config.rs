@@ -14,6 +14,20 @@ use serde::Deserialize;
 #[serde(default)]
 pub struct Config {
     pub library: LibraryConfig,
+    pub lookup: LookupConfig,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct LookupConfig {
+    /// Replaces the built-in set when given.
+    pub provider: Vec<crate::lookup::ProviderSpec>,
+}
+
+impl LookupConfig {
+    pub fn providers(&self) -> Vec<crate::lookup::ProviderSpec> {
+        if self.provider.is_empty() { crate::lookup::default_providers() } else { self.provider.clone() }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -24,7 +38,7 @@ pub struct LibraryConfig {
 
 impl Default for Config {
     fn default() -> Config {
-        Config { library: LibraryConfig::default() }
+        Config { library: LibraryConfig::default(), lookup: LookupConfig::default() }
     }
 }
 
@@ -83,6 +97,18 @@ mod tests {
     fn defaults_to_documents_books() {
         let c = Config::parse("").unwrap();
         assert!(c.library_folders()[0].ends_with("Documents/Books"));
+    }
+
+    #[test]
+    fn lookup_providers_default_and_override() {
+        assert_eq!(Config::parse("").unwrap().lookup.providers().len(), 3);
+        let c = Config::parse(
+            "[[lookup.provider]]\nname = \"Local\"\nkind = \"command\"\nkey = \"D\"\ncommand = [\"sdcv\", \"-n\", \"{text}\"]\n",
+        )
+        .unwrap();
+        let p = c.lookup.providers();
+        assert_eq!(p.len(), 1);
+        assert_eq!(p[0].command, vec!["sdcv", "-n", "{text}"]);
     }
 
     #[test]
