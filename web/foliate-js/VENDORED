@@ -1,0 +1,2 @@
+foliate-js vendored from https://github.com/johnfactotum/foliate-js at 78914aef4466eb960965702401634c2cb348e9b1 (MIT).
+Removed: tests, rollup, ui, vendor/pdfjs (PDF is out of scope).

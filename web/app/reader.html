@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<meta name="color-scheme" content="light dark">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' blob:; script-src 'self'; style-src 'self' blob: 'unsafe-inline'; img-src 'self' blob: data:; font-src 'self' blob: data:; connect-src 'self' blob: data:; frame-src blob: data:; object-src blob: data:; form-action 'none';">
+<style>
+html, body {
+    margin: 0;
+    height: 100%;
+    background: var(--bg, #101315);
+    color: var(--fg, #cacccc);
+    overflow: hidden;
+}
+foliate-view {
+    display: block;
+    height: 100%;
+    --overlayer-highlight-blend-mode: var(--blend, screen);
+}
+</style>
+<input type="file" id="file" hidden>
+<script src="reader.js" type="module"></script>

@@ -1,0 +1,14 @@
+[package]
+name = "omaread"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+omaread-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+adw = { version = "0.9", package = "libadwaita", features = ["v1_6"] }
+gtk = { version = "0.11", package = "gtk4", features = ["v4_16"] }
+webkit = { version = "0.6", package = "webkit6", features = ["v2_48"] }
+rust-embed = { version = "8", features = ["include-exclude"] }
