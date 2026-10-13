@@ -1,21 +1,24 @@
 //! The window: the library, or a book filling it with the chrome floating over.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::Path;
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use adw::prelude::*;
 use gtk::{gio, glib};
 use omaread_core::config::Config;
 use omaread_core::db::{Db, Progress};
+use omaread_core::command::{self, Command};
 use omaread_core::library::{self, Book, Paths};
+use omaread_core::speed::{ReadingSpeed, format_minutes};
 use omaread_core::theme::Theme;
 
 use crate::keys::{Action, Context, Keymap};
 use crate::library_view::LibraryView;
 use crate::reader::{Event, Location, Reader};
 use crate::service::Service;
+use crate::toc_view::{TocItem, TocView};
 use crate::theming::Theming;
 
 const LIBRARY: &str = "library";
@@ -24,12 +27,21 @@ const READER: &str = "reader";
 /// How long reading position changes settle before they're written.
 const SAVE_DELAY: Duration = Duration::from_millis(800);
 
+const SPEED_SETTING: &str = "reading_speed";
+/// foliate-js counts a "location" as this many bytes of text.
+const BYTES_PER_LOCATION: f64 = 1500.0;
+/// The fixed pace foliate-js's time estimates assume, which we rescale.
+const FOLIATE_BYTES_PER_MINUTE: f64 = 1600.0;
+
 pub struct Window {
     pub window: adw::ApplicationWindow,
     stack: gtk::Stack,
     library: Rc<LibraryView>,
     reader: Reader,
     status: Status,
+    toc: Rc<TocView>,
+    toc_items: RefCell<Vec<TocItem>>,
+    cmdline: gtk::Entry,
     toast: gtk::Label,
     toast_timer: RefCell<Option<glib::SourceId>>,
     theming: Rc<RefCell<Theming>>,
@@ -41,6 +53,17 @@ pub struct Window {
     save_timer: RefCell<Option<glib::SourceId>>,
     /// The window's own handle, for timers that must not keep it alive.
     me: RefCell<std::rc::Weak<Window>>,
+    speed: Cell<ReadingSpeed>,
+    /// Where the last page started, and when, to learn reading speed.
+    page: RefCell<Option<PageSeen>>,
+    /// The next relocation follows a page turn (not a jump), so it can teach the pace.
+    turned: Cell<bool>,
+    last_location: RefCell<Option<Location>>,
+}
+
+struct PageSeen {
+    at: Instant,
+    fraction: f64,
 }
 
 struct Current {
@@ -102,9 +125,26 @@ impl Window {
         });
 
         let status = status_line();
+        let toc = TocView::new({
+            let with_window = with_window.clone();
+            move |href| {
+                if let Some(win) = with_window() {
+                    win.toc.close();
+                    win.reader.call("goTo", &serde_json::to_string(&href).unwrap_or_default());
+                    win.reader.view.grab_focus();
+                }
+            }
+        });
+        let cmdline = gtk::Entry::builder()
+            .valign(gtk::Align::End)
+            .visible(false)
+            .css_classes(["cmdline"])
+            .build();
         let reader_overlay = gtk::Overlay::new();
         reader_overlay.set_child(Some(&reader.view));
         reader_overlay.add_overlay(&status.bar);
+        reader_overlay.add_overlay(&toc.root);
+        reader_overlay.add_overlay(&cmdline);
 
         let stack = gtk::Stack::builder()
             .transition_type(gtk::StackTransitionType::Crossfade)
@@ -137,6 +177,9 @@ impl Window {
             library,
             reader,
             status,
+            toc,
+            toc_items: RefCell::default(),
+            cmdline,
             toast,
             toast_timer: RefCell::default(),
             theming,
@@ -146,6 +189,23 @@ impl Window {
             current: RefCell::default(),
             save_timer: RefCell::default(),
             me: RefCell::default(),
+            speed: Cell::new(ReadingSpeed::default()),
+            page: RefCell::default(),
+            turned: Cell::new(false),
+            last_location: RefCell::default(),
+        });
+        if let Some(speed) = win.db.as_ref().and_then(|db| db.setting(SPEED_SETTING).ok().flatten()).and_then(|s| ReadingSpeed::from_setting(&s)) {
+            win.speed.set(speed);
+        }
+        win.cmdline.connect_activate({
+            let win = Rc::downgrade(&win);
+            move |entry| {
+                if let Some(win) = win.upgrade() {
+                    let text = entry.text().to_string();
+                    win.close_cmdline();
+                    win.run_command(&text);
+                }
+            }
         });
         win.me.replace(Rc::downgrade(&win));
         *this.borrow_mut() = Some(win.clone());
@@ -233,6 +293,11 @@ impl Window {
         let cfi = saved.as_ref().and_then(|p| p.cfi.clone());
 
         self.window.set_title(Some(&book.title));
+        self.toc.close();
+        self.toc.set_items(&[]);
+        self.toc_items.borrow_mut().clear();
+        self.page.take();
+        self.last_location.take();
         self.status.section.set_label("");
         self.status.position.set_label("");
         self.reader.open(book.path.clone(), cfi.as_deref());
@@ -248,6 +313,9 @@ impl Window {
     /// Back to the library, keeping where we were.
     fn close_book(&self) {
         self.save_progress();
+        self.save_speed();
+        self.toc.close();
+        self.close_cmdline();
         if let Some(current) = self.current.take() {
             let mut book = current.book;
             book.progress = Some(current.progress);
@@ -260,7 +328,13 @@ impl Window {
     }
 
     fn context(&self) -> Context {
-        if self.stack.visible_child_name().as_deref() == Some(READER) { Context::Reader } else { Context::Library }
+        if self.stack.visible_child_name().as_deref() != Some(READER) {
+            Context::Library
+        } else if self.toc.is_open() {
+            Context::Toc
+        } else {
+            Context::Reader
+        }
     }
 
     fn push_palette(&self, theme: &Theme) {
@@ -271,9 +345,12 @@ impl Window {
     fn on_event(&self, event: Event) {
         match event {
             Event::Ready => self.push_palette(self.theming.borrow().theme()),
-            Event::BookReady { .. } => {
+            Event::BookReady { toc, .. } => {
+                self.toc.set_items(&toc);
+                self.toc_items.replace(toc);
                 self.reader.view.grab_focus();
             }
+            Event::Notice { message } => self.show_toast(&message, false),
             Event::BookError { message, stack } => {
                 eprintln!("omaread: could not open book: {message}\n{stack}");
                 self.show_toast(&format!("Could not open this book: {message}"), true);
@@ -282,8 +359,10 @@ impl Window {
                 self.library.focus();
             }
             Event::Relocate(location) => {
+                self.learn_pace(&location);
                 self.update_status(&location);
                 self.record(&location);
+                self.last_location.replace(Some(location));
             }
             Event::ExternalLink { href } => self.open_link(&href),
             Event::Selection { .. } => {}
@@ -346,15 +425,101 @@ impl Window {
         }
     }
 
+    /// A page turned after being read teaches the reading pace.
+    fn learn_pace(&self, l: &Location) {
+        let now = Instant::now();
+        let turned = self.turned.replace(false);
+        let previous = self.page.replace(Some(PageSeen { at: now, fraction: l.fraction }));
+        let (Some(previous), Some(loc)) = (previous, l.location) else { return };
+        if !turned || l.fraction <= previous.fraction {
+            return;
+        }
+        let book_bytes = loc.total as f64 * BYTES_PER_LOCATION;
+        let bytes = (l.fraction - previous.fraction) * book_bytes;
+        let mut speed = self.speed.get();
+        if speed.observe(bytes, now.duration_since(previous.at).as_secs_f64()) {
+            self.speed.set(speed);
+            if speed.samples % 10 == 0 {
+                self.save_speed();
+            }
+        }
+    }
+
+    fn save_speed(&self) {
+        if let Some(db) = &self.db
+            && let Err(e) = db.set_setting(SPEED_SETTING, &self.speed.get().to_setting())
+        {
+            eprintln!("omaread: could not save reading speed: {e}");
+        }
+    }
+
     fn update_status(&self, l: &Location) {
         self.status.section.set_label(l.toc_label.as_deref().unwrap_or(""));
         let percent = (l.fraction * 100.0).round() as u32;
-        let position = match (&l.page_label, l.location) {
-            (Some(page), _) => format!("p. {page}  ·  {percent}%"),
-            (None, Some(loc)) if loc.total > 0 => format!("{} / {}  ·  {percent}%", loc.current + 1, loc.total),
-            _ => format!("{percent}%"),
-        };
-        self.status.position.set_label(&position);
+        let mut parts = Vec::new();
+        if let Some(time) = l.time {
+            // foliate-js's minutes at its pace, back to bytes, then at yours.
+            let speed = self.speed.get();
+            let section = speed.minutes_for(time.section * FOLIATE_BYTES_PER_MINUTE);
+            let total = speed.minutes_for(time.total * FOLIATE_BYTES_PER_MINUTE);
+            parts.push(format!("{} left in chapter", format_minutes(section)));
+            parts.push(format!("{} left", format_minutes(total)));
+        }
+        match (&l.page_label, l.location) {
+            (Some(page), _) => parts.push(format!("p. {page}")),
+            (None, Some(loc)) if loc.total > 0 => parts.push(format!("{} / {}", loc.current + 1, loc.total)),
+            _ => {}
+        }
+        parts.push(format!("{percent}%"));
+        self.status.position.set_label(&parts.join("  ·  "));
+    }
+
+    fn open_toc(&self) {
+        if self.toc.is_empty() {
+            self.show_toast("This book has no table of contents", false);
+            return;
+        }
+        let href = self.last_location.borrow().as_ref().and_then(|l| l.toc_href.clone());
+        self.toc.open(href.as_deref());
+    }
+
+    fn open_cmdline(&self) {
+        self.cmdline.set_text(":");
+        self.cmdline.set_visible(true);
+        self.cmdline.grab_focus();
+        self.cmdline.set_position(-1);
+    }
+
+    fn close_cmdline(&self) {
+        if WidgetExt::is_visible(&self.cmdline) {
+            self.cmdline.set_visible(false);
+            self.reader.view.grab_focus();
+        }
+    }
+
+    fn cmdline_has_focus(&self) -> bool {
+        WidgetExt::is_visible(&self.cmdline)
+            && gtk::prelude::GtkWindowExt::focus(&self.window)
+                .is_some_and(|f| f == self.cmdline.clone().upcast::<gtk::Widget>() || f.is_ancestor(&self.cmdline))
+    }
+
+    fn run_command(&self, text: &str) {
+        let text = text.trim();
+        if text.trim_start_matches(':').trim().is_empty() {
+            return;
+        }
+        match command::parse(text) {
+            Ok(Command::GotoFraction(f)) => self.reader.call("goToFraction", &f.to_string()),
+            Ok(Command::GotoPage(label)) => self.reader.call("goToPage", &serde_json::to_string(&label).unwrap_or_default()),
+            Ok(Command::GotoChapter(n)) => {
+                let href = crate::toc_view::chapter_href(&self.toc_items.borrow(), n);
+                match href {
+                    Some(href) => self.reader.call("goTo", &serde_json::to_string(&href).unwrap_or_default()),
+                    None => self.show_toast(&format!("There is no chapter {n}"), true),
+                }
+            }
+            Err(e) => self.show_toast(&e, true),
+        }
     }
 
     fn install_keys(self: &Rc<Self>) {
@@ -371,6 +536,15 @@ impl Window {
 
     pub fn handle_key(&self, key: gtk::gdk::Key, mods: gtk::gdk::ModifierType) -> glib::Propagation {
         let context = self.context();
+
+        // Typing a command: Esc cancels, Enter runs (the entry's own activate).
+        if self.cmdline_has_focus() {
+            if key == gtk::gdk::Key::Escape {
+                self.close_cmdline();
+                return glib::Propagation::Stop;
+            }
+            return glib::Propagation::Proceed;
+        }
 
         // Typing in the filter: only Esc and Enter are ours.
         if context == Context::Library && self.library.filter_has_focus() {
@@ -402,7 +576,21 @@ impl Window {
     fn run(&self, context: Context, action: Action) {
         let call = |method: &str| self.reader.call(method, "");
         match (context, action) {
-            (Context::Reader, Action::NextPage) => call("next"),
+            (Context::Reader, Action::NextPage) => {
+                self.turned.set(true);
+                call("next")
+            }
+            (Context::Reader, Action::Toc) => self.open_toc(),
+            (Context::Reader, Action::CommandLine) => self.open_cmdline(),
+            (Context::Toc, Action::Move(0, dy)) => self.toc.move_cursor(dy),
+            (Context::Toc, Action::Move(dx, _)) => self.toc.fold(dx > 0),
+            (Context::Toc, Action::First) => self.toc.move_cursor(i32::MIN / 2),
+            (Context::Toc, Action::Last) => self.toc.move_cursor(i32::MAX / 2),
+            (Context::Toc, Action::Open) => self.toc.activate(),
+            (Context::Toc, Action::Close) => {
+                self.toc.close();
+                self.reader.view.grab_focus();
+            }
             (Context::Reader, Action::PrevPage) => call("prev"),
             (Context::Reader, Action::NextSection) => call("nextSection"),
             (Context::Reader, Action::PrevSection) => call("prevSection"),
@@ -438,6 +626,7 @@ impl Window {
             (Context::Library, Action::Close) => self.window.close(),
             (_, Action::Quit) => {
                 self.save_progress();
+                self.save_speed();
                 if let Some(app) = self.window.application() {
                     app.quit();
                 }

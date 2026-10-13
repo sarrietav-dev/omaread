@@ -13,6 +13,7 @@ use serde::Deserialize;
 use webkit::prelude::*;
 
 use crate::assets;
+use crate::toc_view::TocItem;
 
 // Fields the window doesn't read yet are kept for the milestones that will
 // (library metadata, time left, lookups).
@@ -26,6 +27,12 @@ pub enum Event {
         metadata: Metadata,
         #[serde(rename = "pageTotal")]
         page_total: Option<String>,
+        #[serde(default)]
+        toc: Vec<TocItem>,
+    },
+    /// Something the reader should be told, from the page.
+    Notice {
+        message: String,
     },
     BookError {
         message: String,
@@ -67,7 +74,16 @@ pub struct Location {
     pub location: Option<Span>,
     pub section: Option<Span>,
     pub toc_label: Option<String>,
+    pub toc_href: Option<String>,
     pub page_label: Option<String>,
+    /// foliate-js's estimate in minutes at its fixed pace; we rescale it.
+    pub time: Option<TimeLeft>,
+}
+
+#[derive(Debug, Default, Clone, Copy, Deserialize)]
+pub struct TimeLeft {
+    pub section: f64,
+    pub total: f64,
 }
 
 #[derive(Debug, Default, Clone, Copy, Deserialize)]

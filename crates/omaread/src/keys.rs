@@ -14,7 +14,9 @@ pub enum Action {
     Back,
     Forward,
     ToggleStatus,
-    // Library
+    Toc,
+    CommandLine,
+    // Library and panels
     Move(i32, i32),
     Open,
     Filter,
@@ -31,6 +33,8 @@ pub enum Action {
 pub enum Context {
     Library,
     Reader,
+    /// The table of contents is open over the book.
+    Toc,
 }
 
 #[derive(Default)]
@@ -70,6 +74,7 @@ impl Keymap {
         match context {
             Context::Reader => reader(key, ch, shift),
             Context::Library => library(key, ch, shift),
+            Context::Toc => toc(key, ch),
         }
     }
 }
@@ -91,7 +96,32 @@ fn reader(key: Key, ch: Option<char>, shift: bool) -> Option<Action> {
         'K' => Some(Action::PrevSection),
         'G' => Some(Action::Last),
         'i' => Some(Action::ToggleStatus),
+        't' => Some(Action::Toc),
+        ':' => Some(Action::CommandLine),
         'q' => Some(Action::Close),
+        _ => None,
+    }
+}
+
+fn toc(key: Key, ch: Option<char>) -> Option<Action> {
+    match key {
+        Key::Up => return Some(Action::Move(0, -1)),
+        Key::Down => return Some(Action::Move(0, 1)),
+        Key::Left => return Some(Action::Move(-1, 0)),
+        Key::Right => return Some(Action::Move(1, 0)),
+        Key::Return | Key::KP_Enter => return Some(Action::Open),
+        Key::Escape => return Some(Action::Close),
+        Key::Home => return Some(Action::First),
+        Key::End => return Some(Action::Last),
+        _ => {}
+    }
+    match ch? {
+        'j' => Some(Action::Move(0, 1)),
+        'k' => Some(Action::Move(0, -1)),
+        'h' => Some(Action::Move(-1, 0)),
+        'l' => Some(Action::Move(1, 0)),
+        'G' => Some(Action::Last),
+        't' | 'q' => Some(Action::Close),
         _ => None,
     }
 }

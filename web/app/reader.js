@@ -117,6 +117,15 @@ const metadataOf = book => {
     }
 }
 
+// Just what the TOC panel needs, and nothing that can't cross to Rust.
+const tocOf = (items, depth = 0) => depth > 8 || !Array.isArray(items) ? [] : items
+    .filter(item => item && typeof item === 'object')
+    .map(item => ({
+        label: String(item.label ?? '').trim().replace(/\s+/g, ' ') || '…',
+        href: typeof item.href === 'string' ? item.href : null,
+        children: tocOf(item.subitems, depth + 1),
+    }))
+
 const open = async file => {
     view?.close()
     view?.remove()
@@ -134,6 +143,7 @@ const open = async file => {
             location: location ?? null,
             time: time ?? null,
             tocLabel: tocItem?.label?.trim() ?? null,
+            tocHref: tocItem?.href ?? null,
             pageLabel: pageItem?.label ?? null,
         })
     })
@@ -152,7 +162,12 @@ const open = async file => {
     await view.open(book)
     applyLayout()
     await view.init({ lastLocation: pendingOpen.lastLocation, showTextStart: !pendingOpen.lastLocation })
-    emit({ type: 'book-ready', metadata: metadataOf(book), pageTotal: book.pageList?.findLast(x => !isNaN(parseInt(x.label)))?.label ?? null })
+    emit({
+        type: 'book-ready',
+        metadata: metadataOf(book),
+        pageTotal: book.pageList?.findLast(x => !isNaN(parseInt(x.label)))?.label ?? null,
+        toc: tocOf(book.toc),
+    })
 }
 
 fileInput.addEventListener('change', () => {
@@ -188,6 +203,11 @@ globalThis.omaread = {
     first: () => view?.renderer?.firstSection?.(),
     last: () => view?.renderer?.lastSection?.(),
     goTo: target => view?.goTo(target),
+    goToPage: label => {
+        const item = view?.book.pageList?.find(p => String(p.label).trim() === String(label))
+        if (item) return view.goTo(item.href)
+        emit({ type: 'notice', message: view?.book.pageList?.length ? `No page ${label} in this book` : 'This book has no page numbers; try a percentage' })
+    },
     goToFraction: f => view?.goToFraction(f),
     back: () => view?.history.back(),
     forward: () => view?.history.forward(),

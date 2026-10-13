@@ -50,10 +50,14 @@ Reading
 | `J` / `K` | next / previous chapter |
 | `gg` / `G` | start / end of the book |
 | `Ctrl-o` / `Ctrl-i` | back / forward |
+| `t` | table of contents (`j`/`k` move, `h`/`l` fold, Enter go) |
+| `:` | command line: `:42%`, `:p 120`, `:ch 7` |
 | `i` | toggle the status line |
 | `q` / Esc | back to the library |
 
-Your place in every book is saved as you read.
+Your place in every book is saved as you read. The status line shows the
+chapter, time left in the chapter and the book (learned from your own reading
+pace), the page and how far through you are.
 
 ## License
 

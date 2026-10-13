@@ -35,6 +35,13 @@ const MIGRATIONS: &[&str] = &[
         opened_at  INTEGER NOT NULL
     );
     "#,
+    // 2: small app-wide values (reading speed, …)
+    r#"
+    CREATE TABLE settings (
+        key    TEXT PRIMARY KEY,
+        value  TEXT NOT NULL
+    );
+    "#,
 ];
 
 pub struct Db {
@@ -153,6 +160,17 @@ impl Db {
         tx.commit()
     }
 
+    pub fn setting(&self, key: &str) -> Result<Option<String>, Error> {
+        self.conn.query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| r.get(0)).optional()
+    }
+
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<(), Error> {
+        self.conn
+            .prepare_cached("INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value")?
+            .execute([key, value])?;
+        Ok(())
+    }
+
     pub fn progress(&self, identity: &str) -> Result<Option<Progress>, Error> {
         self.conn
             .query_row(
@@ -225,6 +243,15 @@ mod tests {
         let p = Progress { cfi: Some("epubcfi(/6/4)".into()), fraction: 0.25, opened_at: 10 };
         db.save_progress("x", &p).unwrap();
         assert_eq!(db.progress("x").unwrap(), Some(p));
+    }
+
+    #[test]
+    fn settings_round_trip() {
+        let db = Db::in_memory().unwrap();
+        assert_eq!(db.setting("k").unwrap(), None);
+        db.set_setting("k", "1").unwrap();
+        db.set_setting("k", "2").unwrap();
+        assert_eq!(db.setting("k").unwrap().as_deref(), Some("2"));
     }
 
     #[test]

@@ -117,6 +117,38 @@ window.omaread * {{ border-radius: 0; }}
 }}
 .toast.error {{ border-color: {urgent}; }}
 
+/* Panels over the book */
+.side-panel {{
+  min-width: {panel_w}px;
+  margin: {lg}px;
+  margin-bottom: {panel_bottom}px;
+}}
+listview.toc-list {{ background: none; font-size: {body_small}px; }}
+listview.toc-list > row {{
+  padding: {xs}px {sm}px;
+  color: {fg};
+  border: {nbw}px solid transparent;
+}}
+listview.toc-list > row:hover {{ background-color: {hover_fill}; }}
+listview.toc-list > row:selected {{
+  background-color: {selected_fill};
+  color: {accent_text};
+}}
+listview.toc-list expander {{ min-width: {body_small}px; color: {muted}; }}
+
+entry.cmdline {{
+  margin: 0;
+  padding: {xs}px {row_x}px;
+  min-height: 0;
+  background-color: {bg};
+  color: {fg};
+  border: none;
+  border-top: {hairline}px solid {accent};
+  box-shadow: none;
+  outline: none;
+  font-size: {body_small}px;
+}}
+
 /* Library */
 .library-rail-scroller {{
   min-width: {rail}px;
@@ -196,6 +228,8 @@ progressbar.book-progress > trough > progress {{
         bg_alpha = bg.alpha(0.6),
         xs = t.space(3.0),
         rail = t.space(200.0),
+        panel_w = t.space(340.0),
+        panel_bottom = t.space(40.0),
         progress = t.space(3.0).max(2),
         accent_text = t.accent.lifted(bg, fg, 4.5),
         urgent = t.urgent,

@@ -4,6 +4,7 @@ mod library_view;
 mod reader;
 mod service;
 mod theming;
+mod toc_view;
 mod window;
 
 use std::cell::RefCell;
@@ -113,7 +114,16 @@ fn install_debug_actions(app: &adw::Application, win: &Rc<window::Window>) {
         }
         match gtk::accelerator_parse(&spec) {
             Some((key, mods)) => {
-                win.handle_key(key, mods);
+                // Keys the window lets through would go to the focused field;
+                // the one that matters for tests is Enter.
+                if win.handle_key(key, mods) == glib::Propagation::Proceed
+                    && key == gtk::gdk::Key::Return
+                    && let Some(entry) = gtk::prelude::GtkWindowExt::focus(&win.window)
+                        .and_then(|f| f.ancestor(gtk::Entry::static_type()))
+                        .and_downcast::<gtk::Entry>()
+                {
+                    entry.emit_activate();
+                }
             }
             None => eprintln!("omaread: debug-key: can't parse {spec:?}"),
         }
