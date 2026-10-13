@@ -57,6 +57,7 @@ Reading
 | `:` | command palette: every command, fuzzy; also `:42%`, `:p 120`, `:ch 7`, `:export` |
 | select text | `h` highlight, `1`–`5` color, `a` note, `y` copy, `d` dictionary, `w` Wikipedia, `t` translate |
 | click a highlight | `a` note, `1`–`5` recolor, `x` delete |
+| `s` | read aloud / pause (`]`/`[` next/previous sentence, `<`/`>` speed, `V` voice, Esc stop); on a selection, read from there |
 | `m` | bookmark this page (again to remove) |
 | `A` / `'` | highlights / bookmarks (`j`/`k`, Enter go, `a` note, `dd` delete) |
 | `:export` | highlights and notes to `~/Documents/Omaread/<title>.md` (`:export json` too) |
@@ -109,6 +110,10 @@ url = "https://duckduckgo.com/?q={text}"
 Commands run without a shell, and a selection never becomes an option
 (leading dashes are dropped); end your options with `--` where the program
 supports it. `omaread lookup d goroutine` prints what the card would show.
+
+Reading aloud goes through speech-dispatcher (so your piper voices work),
+one sentence at a time with the sentence highlighted; it turns pages and
+moves through chapters on its own. Voice and speed are remembered.
 
 Coming from Foliate? On first run Omaread brings over your reading
 positions, highlights, notes and bookmarks (`omaread import-foliate` does it

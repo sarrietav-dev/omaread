@@ -20,7 +20,8 @@ use omaread_core::theme::Theme;
 use crate::annotations_view::{AnnotationsPanel, NoteEditor, SelectionBar};
 use crate::keys::{Action, Context, Keymap};
 use crate::library_view::LibraryView;
-use crate::reader::{Event, Location, Reader, Selection};
+use crate::reader::{Event, Location, Reader, Selection, Sentence};
+use crate::tts::{self, Tts};
 use crate::lookup_view::LookupView;
 use crate::palette::{Palette, Run};
 use crate::search_view::{Hit, SearchView};
@@ -38,6 +39,8 @@ const SAVE_DELAY: Duration = Duration::from_millis(800);
 const SPEED_SETTING: &str = "reading_speed";
 const PREFS_SETTING: &str = "reader_prefs";
 const FOLIATE_IMPORTED: &str = "foliate_imported";
+const TTS_RATE: &str = "tts_rate";
+const TTS_VOICE: &str = "tts_voice";
 /// foliate-js counts a "location" as this many bytes of text.
 const BYTES_PER_LOCATION: f64 = 1500.0;
 /// The fixed pace foliate-js's time estimates assume, which we rescale.
@@ -52,6 +55,13 @@ pub struct Window {
     toc: Rc<TocView>,
     toc_items: RefCell<Vec<TocItem>>,
     palette: Rc<Palette>,
+    tts: Tts,
+    speech: RefCell<Option<Speech>>,
+    tts_bar: gtk::Label,
+    /// Voices for the book's language, as speech-dispatcher lists them.
+    voices: RefCell<Vec<omaread_core::ssip::Voice>>,
+    tts_rate: Cell<i32>,
+    tts_voice: RefCell<Option<String>>,
     lookup: Rc<LookupView>,
     /// Lookup answers from worker threads: (provider, query, answer).
     lookup_tx: async_channel::Sender<(usize, String, Result<LookupResult, String>)>,
@@ -93,6 +103,15 @@ pub struct Window {
 enum Focus {
     Text(Selection),
     Highlight(i64),
+}
+
+/// Reading aloud: the block being read, and where in it.
+struct Speech {
+    playing: bool,
+    sentences: Vec<Sentence>,
+    index: usize,
+    /// The sentence speech-dispatcher is reading (our number for it).
+    seq: u64,
 }
 
 struct PageSeen {
@@ -170,6 +189,14 @@ impl Window {
             }
         });
         let palette = Palette::new();
+        let (tts_tx, tts_rx) = async_channel::unbounded::<tts::Event>();
+        let tts = Tts::start(tts_tx);
+        let tts_bar = gtk::Label::builder()
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::End)
+            .visible(false)
+            .css_classes(["tts-bar"])
+            .build();
         let lookup = LookupView::new(config.lookup.providers());
         let (lookup_tx, lookup_rx) = async_channel::unbounded::<(usize, String, Result<LookupResult, String>)>();
         let search = SearchView::new();
@@ -187,6 +214,7 @@ impl Window {
         reader_overlay.add_overlay(&toc.root);
         reader_overlay.add_overlay(&search.root);
         reader_overlay.add_overlay(&lookup.root);
+        reader_overlay.add_overlay(&tts_bar);
         reader_overlay.add_overlay(&settings.root);
         let selection_bar = SelectionBar::new();
         let note_editor = NoteEditor::new();
@@ -230,6 +258,12 @@ impl Window {
             toc,
             toc_items: RefCell::default(),
             palette,
+            tts,
+            speech: RefCell::default(),
+            tts_bar,
+            voices: RefCell::default(),
+            tts_rate: Cell::new(0),
+            tts_voice: RefCell::default(),
             lookup,
             lookup_tx,
             search,
@@ -265,6 +299,19 @@ impl Window {
         if let Some(speed) = win.db.as_ref().and_then(|db| db.setting(SPEED_SETTING).ok().flatten()).and_then(|s| ReadingSpeed::from_setting(&s)) {
             win.speed.set(speed);
         }
+        if let Some(db) = &win.db {
+            win.tts_rate.set(db.setting(TTS_RATE).ok().flatten().and_then(|r| r.parse().ok()).unwrap_or(0));
+            win.tts_voice.replace(db.setting(TTS_VOICE).ok().flatten());
+        }
+        glib::spawn_future_local({
+            let win = Rc::downgrade(&win);
+            async move {
+                while let Ok(event) = tts_rx.recv().await {
+                    let Some(win) = win.upgrade() else { break };
+                    win.on_tts(event);
+                }
+            }
+        });
         glib::spawn_future_local({
             let win = Rc::downgrade(&win);
             async move {
@@ -380,6 +427,7 @@ impl Window {
         let cfi = saved.as_ref().and_then(|p| p.cfi.clone());
 
         self.window.set_title(Some(&book.title));
+        self.stop_speech();
         self.toc.close();
         self.toc.set_items(&[]);
         self.toc_items.borrow_mut().clear();
@@ -413,6 +461,7 @@ impl Window {
     fn close_book(&self) {
         self.close_overlays();
         self.lookup.close();
+        self.stop_speech();
         self.save_progress();
         self.save_speed();
         self.toc.close();
@@ -499,6 +548,22 @@ impl Window {
                 }
             }
             Event::Located { items } => self.place_annotations(items),
+            Event::TtsBlock { sentences } => {
+                let mut speech = self.speech.borrow_mut();
+                if let Some(s) = speech.as_mut() {
+                    s.sentences = sentences;
+                    s.index = 0;
+                }
+                let playing = speech.as_ref().is_some_and(|s| s.playing);
+                drop(speech);
+                if playing {
+                    self.speak_current();
+                }
+            }
+            Event::TtsEnd => {
+                self.stop_speech();
+                self.show_toast("Finished reading aloud", false);
+            }
             Event::SearchResults { chapter, items } => self.search.add(&chapter, items),
             Event::SearchProgress { progress } => self.search.progress(progress),
             Event::SearchDone { error, .. } => {
@@ -773,6 +838,190 @@ impl Window {
             let result = lookups::run(&spec, &text, lang.as_deref());
             let _ = tx.send_blocking((index, text, result));
         });
+    }
+
+    // --- Reading aloud ------------------------------------------------------
+
+    fn on_tts(&self, event: tts::Event) {
+        match event {
+            tts::Event::Ended(seq) => {
+                let next = {
+                    let mut speech = self.speech.borrow_mut();
+                    let Some(s) = speech.as_mut().filter(|s| s.playing && s.seq == seq) else { return };
+                    s.index += 1;
+                    s.index < s.sentences.len()
+                };
+                if next {
+                    self.speak_current();
+                } else {
+                    self.reader.call("ttsNext", "");
+                }
+            }
+            tts::Event::Voices(all) => {
+                let lang = self.current.borrow().as_ref().and_then(|c| c.book.language.clone()).unwrap_or_default();
+                let lang = lang.split(['-', '_']).next().unwrap_or("").to_lowercase();
+                let mut voices: Vec<_> = all.iter().filter(|v| !lang.is_empty() && v.language.to_lowercase().starts_with(&lang)).cloned().collect();
+                if voices.is_empty() {
+                    voices = all;
+                }
+                self.voices.replace(voices);
+                self.update_tts_bar();
+            }
+            tts::Event::Error(e) => {
+                self.show_toast(&e, true);
+                self.stop_speech();
+            }
+        }
+    }
+
+    fn toggle_speech(&self, from_selection: bool) {
+        let state = self.speech.borrow().as_ref().map(|s| s.playing);
+        match state {
+            None => self.start_speech(from_selection),
+            Some(true) if !from_selection => {
+                if let Some(s) = self.speech.borrow_mut().as_mut() {
+                    s.playing = false;
+                    s.seq += 1;
+                }
+                self.tts.send(tts::Command::Stop);
+                self.update_tts_bar();
+            }
+            Some(false) if !from_selection => {
+                if let Some(s) = self.speech.borrow_mut().as_mut() {
+                    s.playing = true;
+                }
+                self.speak_current();
+            }
+            Some(_) => {
+                self.tts.send(tts::Command::Stop);
+                self.start_speech(true);
+            }
+        }
+    }
+
+    fn start_speech(&self, from_selection: bool) {
+        let lang = self.current.borrow().as_ref().and_then(|c| c.book.language.clone());
+        if let Some(lang) = lang {
+            self.tts.send(tts::Command::Language(lang));
+        }
+        self.tts.send(tts::Command::Rate(self.tts_rate.get()));
+        if let Some(v) = self.tts_voice.borrow().clone() {
+            self.tts.send(tts::Command::Voice(v));
+        }
+        if self.voices.borrow().is_empty() {
+            self.tts.send(tts::Command::ListVoices);
+        }
+        let seq = self.speech.borrow().as_ref().map(|s| s.seq + 1).unwrap_or(1);
+        self.speech.replace(Some(Speech { playing: true, sentences: Vec::new(), index: 0, seq }));
+        self.close_selection();
+        self.reader.call("ttsStart", &serde_json::json!({ "fromSelection": from_selection }).to_string());
+        self.update_tts_bar();
+    }
+
+    /// Mark the current sentence on the page and send it to be spoken.
+    fn speak_current(&self) {
+        let (mark, text, seq) = {
+            let mut speech = self.speech.borrow_mut();
+            let Some(s) = speech.as_mut() else { return };
+            let Some(sentence) = s.sentences.get(s.index) else { return };
+            s.seq += 1;
+            (sentence.mark.clone(), sentence.text.clone(), s.seq)
+        };
+        self.reader.call("ttsMark", &serde_json::to_string(&mark).unwrap_or_default());
+        self.tts.send(tts::Command::Speak { seq, text });
+        self.update_tts_bar();
+    }
+
+    /// `]` / `[`: a sentence on or back, within the block or into the next.
+    fn step_sentence(&self, delta: i32) {
+        let Some((playing, index, len)) = self.speech.borrow().as_ref().map(|s| (s.playing, s.index, s.sentences.len())) else {
+            return;
+        };
+        self.tts.send(tts::Command::Stop);
+        let target = index as i64 + delta as i64;
+        if target < 0 {
+            self.reader.call("ttsPrev", "");
+            return;
+        }
+        if target as usize >= len {
+            self.reader.call("ttsNext", "");
+            return;
+        }
+        if let Some(s) = self.speech.borrow_mut().as_mut() {
+            s.index = target as usize;
+            s.seq += 1;
+        }
+        if playing {
+            self.speak_current();
+        } else {
+            let mark = self.speech.borrow().as_ref().and_then(|s| s.sentences.get(s.index).and_then(|x| x.mark.clone()));
+            self.reader.call("ttsMark", &serde_json::to_string(&mark).unwrap_or_default());
+        }
+    }
+
+    fn stop_speech(&self) {
+        if self.speech.take().is_some() {
+            self.tts.send(tts::Command::Stop);
+            self.reader.call("ttsStop", "");
+        }
+        self.tts_bar.set_visible(false);
+    }
+
+    fn change_rate(&self, delta: i32) {
+        let rate = (self.tts_rate.get() + delta).clamp(-100, 100);
+        self.tts_rate.set(rate);
+        self.tts.send(tts::Command::Rate(rate));
+        if let Some(db) = &self.db {
+            let _ = db.set_setting(TTS_RATE, &rate.to_string());
+        }
+        // Takes effect from the next sentence; restart this one at the new pace.
+        if self.speech.borrow().as_ref().is_some_and(|s| s.playing) {
+            self.tts.send(tts::Command::Stop);
+            self.speak_current();
+        }
+        self.update_tts_bar();
+    }
+
+    fn next_voice(&self) {
+        let voices = self.voices.borrow().clone();
+        if voices.is_empty() {
+            self.tts.send(tts::Command::ListVoices);
+            return;
+        }
+        let current = self.tts_voice.borrow().clone();
+        let i = voices.iter().position(|v| Some(&v.name) == current.as_ref()).map(|i| (i + 1) % voices.len()).unwrap_or(0);
+        let voice = voices[i].name.clone();
+        self.tts.send(tts::Command::Voice(voice.clone()));
+        if let Some(db) = &self.db {
+            let _ = db.set_setting(TTS_VOICE, &voice);
+        }
+        self.tts_voice.replace(Some(voice));
+        if self.speech.borrow().as_ref().is_some_and(|s| s.playing) {
+            self.tts.send(tts::Command::Stop);
+            self.speak_current();
+        }
+        self.update_tts_bar();
+    }
+
+    fn update_tts_bar(&self) {
+        let Some(playing) = self.speech.borrow().as_ref().map(|s| s.playing) else {
+            self.tts_bar.set_visible(false);
+            return;
+        };
+        let voice = self
+            .tts_voice
+            .borrow()
+            .as_ref()
+            .and_then(|name| self.voices.borrow().iter().find(|v| &v.name == name).map(|v| v.label()))
+            .unwrap_or_else(|| "default voice".into());
+        let rate = self.tts_rate.get();
+        let speed = if rate == 0 { "normal speed".to_string() } else { format!("speed {rate:+}") };
+        let state = if playing { "Reading aloud" } else { "Paused" };
+        let toggle = if playing { "s pause" } else { "s resume" };
+        self.tts_bar.set_label(&format!(
+            "{state}  ·  {voice}  ·  {speed}      {toggle}   ] next   [ back   < > speed   V voice   esc stop"
+        ));
+        self.tts_bar.set_visible(true);
     }
 
     fn open_search(&self) {
@@ -1294,6 +1543,13 @@ impl Window {
                 self.close_selection();
             }
             (Context::Selection, Action::Close) => self.close_selection(),
+            (Context::Selection, Action::SpeakFrom) => self.toggle_speech(true),
+            (Context::Reader, Action::Speak) => self.toggle_speech(false),
+            (Context::Reader, Action::SentenceNext) => self.step_sentence(1),
+            (Context::Reader, Action::SentencePrev) => self.step_sentence(-1),
+            (Context::Reader, Action::Faster) => self.change_rate(10),
+            (Context::Reader, Action::Slower) => self.change_rate(-10),
+            (Context::Reader, Action::NextVoice) => self.next_voice(),
             (Context::Selection | Context::Lookup, Action::Lookup(key)) => self.look_up(key),
             (Context::Lookup, Action::Move(_, dy)) => self.lookup.scroll(dy),
             (Context::Lookup, Action::OpenLink) => {
@@ -1357,6 +1613,7 @@ impl Window {
                 let bar = &self.status.bar;
                 bar.set_visible(!bar.is_visible());
             }
+            (Context::Reader, Action::ClearOrClose) if self.speech.borrow().is_some() => self.stop_speech(),
             (Context::Reader, Action::ClearOrClose) if self.search.has_hits() => {
                 self.search.clear();
                 self.reader.call("clearSearch", "");

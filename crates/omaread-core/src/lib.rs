@@ -13,6 +13,7 @@ pub mod library;
 pub mod lookup;
 pub mod prefs;
 pub mod speed;
+pub mod ssip;
 pub mod style;
 pub mod theme;
 pub mod themes;

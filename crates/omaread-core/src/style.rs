@@ -170,6 +170,14 @@ list.annotation-list .swatch-magenta {{ border-left-color: {hl_magenta}; }}
 list.annotation-list .swatch-underline, list.annotation-list .swatch-squiggly,
 list.annotation-list .swatch-strikethrough {{ border-left-color: {muted}; }}
 .annotations-panel {{ min-width: {panel_wide}px; }}
+label.tts-bar {{
+  background-color: {bg};
+  color: {fg};
+  border: {hairline}px solid {accent};
+  padding: {xs}px {row_x}px;
+  margin-bottom: {panel_bottom}px;
+  font-size: {caption}px;
+}}
 .lookup-tabs {{ font-size: {caption}px; color: {muted}; padding-bottom: {sm}px; border-bottom: {hairline}px solid {rule}; }}
 .lookup-tabs .tab.active {{ color: {accent_text}; }}
 .lookup-body {{ font-size: {body_small}px; color: {fg}; }}

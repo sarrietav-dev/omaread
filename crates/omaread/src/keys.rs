@@ -34,6 +34,15 @@ pub enum Action {
     Note,
     Copy,
     Delete,
+    /// Read aloud, or pause.
+    Speak,
+    /// Read aloud from the selection.
+    SpeakFrom,
+    SentenceNext,
+    SentencePrev,
+    Faster,
+    Slower,
+    NextVoice,
     /// A lookup provider's key, from a selection or the lookup card.
     Lookup(char),
     OpenLink,
@@ -152,6 +161,12 @@ fn reader(key: Key, ch: Option<char>, shift: bool) -> Option<Action> {
         '-' => Some(Action::Smaller),
         'T' => Some(Action::CycleTheme),
         'm' => Some(Action::ToggleBookmark),
+        's' => Some(Action::Speak),
+        ']' => Some(Action::SentenceNext),
+        '[' => Some(Action::SentencePrev),
+        '>' => Some(Action::Faster),
+        '<' => Some(Action::Slower),
+        'V' => Some(Action::NextVoice),
         'A' => Some(Action::Highlights),
         '\'' => Some(Action::Bookmarks),
         'q' => Some(Action::Close),
@@ -189,6 +204,7 @@ fn selection(key: Key, ch: Option<char>) -> Option<Action> {
         'y' => Some(Action::Copy),
         'x' => Some(Action::Delete),
         'q' => Some(Action::Close),
+        's' => Some(Action::SpeakFrom),
         // Anything else may be a lookup provider's key (d, w, t, …).
         c if c.is_alphanumeric() => Some(Action::Lookup(c)),
         _ => None,

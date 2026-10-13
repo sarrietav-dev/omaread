@@ -10,6 +10,7 @@ mod service;
 mod settings_view;
 mod theming;
 mod toc_view;
+mod tts;
 mod window;
 
 use std::cell::RefCell;

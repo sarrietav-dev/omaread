@@ -20,6 +20,74 @@ let bookmarks = []
 let selection = null
 // Bumped to cancel a running search.
 let searchToken = 0
+
+// --- Text-to-speech -------------------------------------------------------
+// Rust speaks one sentence at a time; the page says what the sentences are
+// and shows which one is being read.
+
+const TTS_HIGHLIGHT = 'omaread-tts'
+
+const ttsClearHighlight = () => {
+    for (const { doc } of view?.renderer?.getContents?.() ?? [])
+        doc?.defaultView?.CSS?.highlights?.delete(TTS_HIGHLIGHT)
+}
+
+const ttsHighlight = range => {
+    view.renderer.scrollToAnchor?.(range, true)
+    const win = range.startContainer?.ownerDocument?.defaultView
+    if (!win?.CSS?.highlights || !win.Highlight) return
+    ttsClearHighlight()
+    win.CSS.highlights.set(TTS_HIGHLIGHT, new win.Highlight(range))
+}
+
+const ttsInit = () => view.initTTS('sentence', ttsHighlight)
+
+// SSML with a <mark> before each sentence → [{ mark, text }].
+const sentencesOf = ssml => {
+    if (!ssml) return []
+    const doc = new DOMParser().parseFromString(ssml, 'application/xml')
+    if (doc.querySelector('parsererror')) return []
+    const parts = []
+    let current = null
+    const walk = node => {
+        for (const n of node.childNodes) {
+            if (n.nodeType === 1 && n.localName === 'mark') {
+                current = { mark: n.getAttribute('name'), text: '' }
+                parts.push(current)
+            } else if (n.nodeType === 3) {
+                if (!current) parts.push(current = { mark: null, text: '' })
+                current.text += n.nodeValue
+            } else if (n.nodeType === 1) walk(n)
+        }
+    }
+    walk(doc.documentElement)
+    return parts.map(p => ({ mark: p.mark, text: p.text.replace(/\s+/g, ' ').trim() }))
+        .filter(p => /[\p{L}\p{N}]/u.test(p.text))
+}
+
+// Into the next chapter; false at the end of the book.
+const ttsNextSection = async () => {
+    const r = view.renderer
+    const before = r.getContents?.()[0]?.index
+    await r.nextSection?.()
+    if (r.getContents?.()[0]?.index === before) return false
+    await ttsInit()
+    return true
+}
+
+// Send the block's sentences, skipping blocks with nothing to say.
+const ttsEmit = async ssml => {
+    let parts = sentencesOf(ssml)
+    for (let guard = 0; !parts.length && guard < 200; guard++) {
+        const next = view.tts.next()
+        if (next == null) {
+            if (!await ttsNextSection()) return emit({ type: 'tts-end' })
+            parts = sentencesOf(view.tts.start())
+        } else parts = sentencesOf(next)
+    }
+    if (!parts.length) return emit({ type: 'tts-end' })
+    emit({ type: 'tts-block', sentences: parts })
+}
 let pendingOpen = {}
 
 // Mirrors ReaderPrefs in Rust; replaced wholesale by setPrefs.
@@ -106,6 +174,7 @@ const bookCSS = () => {
         text-underline-offset: .12em;
     }
     ::selection { background: ${p.selection}; }
+    ::highlight(${TTS_HIGHLIGHT}) { background-color: color-mix(in srgb, ${p.link} 30%, transparent); color: inherit; }
     svg, img { background-color: transparent !important; }
     ` : ''}
 `]
@@ -321,6 +390,32 @@ globalThis.omaread = {
     clearSelection() {
         selection?.range?.startContainer?.ownerDocument?.getSelection()?.removeAllRanges()
         selection = null
+    },
+    async ttsStart({ fromSelection = false } = {}) {
+        await ttsInit()
+        const range = fromSelection ? selection?.range : null
+        const ssml = range ? view.tts.from(range) : view.tts.start()
+        omaread.clearSelection()
+        await ttsEmit(ssml)
+    },
+    async ttsNext() {
+        await ttsInit()
+        const ssml = view.tts.next()
+        if (ssml == null) {
+            if (!await ttsNextSection()) return emit({ type: 'tts-end' })
+            return ttsEmit(view.tts.start())
+        }
+        await ttsEmit(ssml)
+    },
+    async ttsPrev() {
+        await ttsInit()
+        await ttsEmit(view.tts.prev() ?? view.tts.start())
+    },
+    ttsMark(mark) {
+        if (mark != null) view?.tts?.setMark(mark)
+    },
+    ttsStop() {
+        ttsClearHighlight()
     },
     // Search the whole book, streaming results by chapter. A new search (or
     // clearSearch) cancels the one running.

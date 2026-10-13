@@ -50,6 +50,12 @@ pub enum Event {
         cfi: String,
         rect: Option<Rect>,
     },
+    /// The next block's sentences to read aloud.
+    TtsBlock {
+        sentences: Vec<Sentence>,
+    },
+    /// Nothing left to read.
+    TtsEnd,
     SearchResults {
         chapter: String,
         items: Vec<crate::search_view::Hit>,
@@ -83,6 +89,12 @@ pub struct Selection {
     #[serde(default)]
     pub fraction: f64,
     pub rect: Option<Rect>,
+}
+
+#[derive(Debug, Default, Clone, Deserialize)]
+pub struct Sentence {
+    pub mark: Option<String>,
+    pub text: String,
 }
 
 /// Where something is on the page, in the page's pixels.
