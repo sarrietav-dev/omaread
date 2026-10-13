@@ -97,16 +97,18 @@ pair = ["es", "en"]
 name = "Local"
 kind = "command"
 key = "D"
-command = ["sdcv", "-n", "{text}"]
+command = ["sdcv", "-n", "--", "{text}"]
 
 [[lookup.provider]]
 name = "Search"
 kind = "url"
-key = "s"
+key = "g"
 url = "https://duckduckgo.com/?q={text}"
 ```
 
-`omaread lookup d goroutine` prints what the card would show.
+Commands run without a shell, and a selection never becomes an option
+(leading dashes are dropped); end your options with `--` where the program
+supports it. `omaread lookup d goroutine` prints what the card would show.
 
 Coming from Foliate? On first run Omaread brings over your reading
 positions, highlights, notes and bookmarks (`omaread import-foliate` does it

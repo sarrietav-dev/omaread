@@ -284,6 +284,14 @@ fn command(argv: &[String], text: &str) -> Result<LookupResult, String> {
     let Some((program, args)) = argv.split_first() else {
         return Err("this provider has no command".into());
     };
+    // The selection is data, never an option: a selection starting with "-"
+    // would otherwise be read as a flag by the program. Leading dashes go,
+    // and control characters with them.
+    let text: String = text.chars().filter(|c| !c.is_control()).collect();
+    let text = text.trim_start_matches(|c: char| c == '-' || c.is_whitespace());
+    if text.is_empty() {
+        return Err("nothing to look up".into());
+    }
     let args: Vec<String> = args.iter().map(|a| a.replace("{text}", text)).collect();
     let mut child = Command::new(program)
         .args(&args)
@@ -422,6 +430,18 @@ mod tests {
         let r = run(&spec, "$(touch /tmp/omaread-should-not-exist); ok", None).unwrap();
         assert_eq!(r.body, "$(touch /tmp/omaread-should-not-exist); ok");
         assert!(!std::path::Path::new("/tmp/omaread-should-not-exist").exists());
+    }
+
+    #[test]
+    fn a_selection_cannot_become_an_option() {
+        let spec = ProviderSpec {
+            kind: "command".into(),
+            command: vec!["echo".into(), "{text}".into()],
+            ..default_providers()[0].clone()
+        };
+        assert_eq!(run(&spec, "--help", None).unwrap().body, "help");
+        assert_eq!(run(&spec, "-n word", None).unwrap().body, "n word");
+        assert!(run(&spec, "---", None).is_err());
     }
 
     #[test]
