@@ -1,0 +1,39 @@
+# Maintainer: Sebastian Arrieta <sarrietav.dev@gmail.com>
+pkgname=omaread-git
+pkgver=r1.0779613
+pkgrel=1
+pkgdesc="A fast, keyboard-first EPUB reader for Omarchy"
+arch=('x86_64')
+url="https://github.com/sarrietav-dev/omaread"
+license=('MIT')
+depends=('gtk4' 'libadwaita' 'webkitgtk-6.0')
+makedepends=('cargo' 'git' 'pkgconf')
+provides=('omaread')
+conflicts=('omaread')
+source=("$pkgname::git+$url")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd "$pkgname"
+  printf 'r%s.%s' "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+build() {
+  cd "$pkgname"
+  cargo build --release --locked
+}
+
+check() {
+  cd "$pkgname"
+  cargo test --locked
+}
+
+package() {
+  cd "$pkgname"
+  install -Dm755 target/release/omaread "$pkgdir/usr/bin/omaread"
+  install -Dm644 "data/io.github.sarrietav_dev.Omaread.desktop" \
+    "$pkgdir/usr/share/applications/io.github.sarrietav_dev.Omaread.desktop"
+  install -Dm644 "data/io.github.sarrietav_dev.Omaread.svg" \
+    "$pkgdir/usr/share/icons/hicolor/scalable/apps/io.github.sarrietav_dev.Omaread.svg"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

@@ -97,6 +97,82 @@ impl Epub {
         file.take(MAX_COVER).read_to_end(&mut bytes).ok()?;
         Some(bytes)
     }
+
+    /// A deeper look than `metadata`: does the spine resolve to files that
+    /// are actually in the zip? What a smoke test asks of every book.
+    pub fn check(&mut self) -> Result<Check, Error> {
+        let opf = read_text(&mut self.zip, &self.opf_path)?;
+        let meta = parse_opf(&opf);
+        let package = parse_package(&opf);
+        let mut problems: Vec<String> = Vec::new();
+        if package.spine.is_empty() {
+            problems.push("no spine".into());
+        }
+        for idref in &package.spine {
+            let Some(href) = package.items.get(idref) else {
+                problems.push(format!("spine points at missing item {idref}"));
+                continue;
+            };
+            if is_remote(href) {
+                continue;
+            }
+            let path = resolve(&self.opf_path, href);
+            if self.zip.by_name(&path).is_err() {
+                problems.push(format!("missing {path}"));
+            }
+        }
+        problems.dedup();
+        Ok(Check { title: meta.title, chapters: package.spine.len(), problems })
+    }
+}
+
+/// What `Epub::check` found: how many chapters, and what's wrong.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Check {
+    pub title: String,
+    pub chapters: usize,
+    pub problems: Vec<String>,
+}
+
+/// The manifest (`id` → `href`) and the spine's `idref`s, in reading order.
+#[derive(Debug, Default)]
+pub struct Package {
+    pub items: std::collections::HashMap<String, String>,
+    pub spine: Vec<String>,
+}
+
+pub fn parse_package(opf: &str) -> Package {
+    let mut reader = Reader::from_str(opf);
+    let mut package = Package::default();
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e) | Event::Empty(e)) => match e.local_name().as_ref() {
+                "item" => {
+                    let id = attr(&e, "id").unwrap_or_default();
+                    let href = attr(&e, "href").unwrap_or_default();
+                    if !id.is_empty() && !href.is_empty() {
+                        package.items.insert(id, href);
+                    }
+                }
+                "itemref" => {
+                    let idref = attr(&e, "idref").unwrap_or_default();
+                    if !idref.is_empty() {
+                        package.spine.push(idref);
+                    }
+                }
+                _ => {}
+            },
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+    }
+    package
+}
+
+/// A resource that isn't in the zip: the check leaves it alone.
+fn is_remote(href: &str) -> bool {
+    let lower = href.trim_start().to_ascii_lowercase();
+    lower.starts_with("http:") || lower.starts_with("https:") || lower.starts_with("data:")
 }
 
 fn read_text(zip: &mut ZipArchive<BufReader<File>>, name: &str) -> Result<String, Error> {
@@ -458,5 +534,55 @@ mod tests {
     fn finds_the_rootfile() {
         let c = r#"<container><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>"#;
         assert_eq!(rootfile(c).as_deref(), Some("OEBPS/content.opf"));
+    }
+
+    const PACKAGE: &str = r##"<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>A Book</dc:title></metadata>
+  <manifest>
+    <item id="c1" href="Text/ch1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="c2" href="Text/ch2.xhtml" media-type="application/xhtml+xml"/>
+    <item id="web" href="https://example.com/x.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine><itemref idref="c1"/><itemref idref="c2"/><itemref idref="web"/></spine>
+</package>"##;
+
+    #[test]
+    fn reads_the_package_spine_and_manifest() {
+        let p = parse_package(PACKAGE);
+        assert_eq!(p.spine, vec!["c1", "c2", "web"]);
+        assert_eq!(p.items["c1"], "Text/ch1.xhtml");
+    }
+
+    /// Write a minimal EPUB: container, OPF, and the given chapter files.
+    fn write_epub(dir: &Path, opf: &str, files: &[(&str, &[u8])]) -> std::path::PathBuf {
+        use std::io::Write as _;
+        let path = dir.join("book.epub");
+        let mut zip = zip::ZipWriter::new(File::create(&path).unwrap());
+        let options = zip::write::SimpleFileOptions::default();
+        zip.start_file("META-INF/container.xml", options).unwrap();
+        zip.write_all(br#"<container><rootfiles><rootfile full-path="content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>"#).unwrap();
+        zip.start_file("content.opf", options).unwrap();
+        zip.write_all(opf.as_bytes()).unwrap();
+        for (name, bytes) in files {
+            zip.start_file(*name, options).unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap();
+        path
+    }
+
+    #[test]
+    fn check_finds_a_complete_book_and_a_broken_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let good = write_epub(dir.path(), PACKAGE, &[("Text/ch1.xhtml", b"<p/>"), ("Text/ch2.xhtml", b"<p/>")]);
+        let check = Epub::open(&good).unwrap().check().unwrap();
+        assert_eq!(check.title, "A Book");
+        assert_eq!(check.chapters, 3);
+        assert!(check.problems.is_empty(), "{:?}", check.problems);
+
+        let dir2 = tempfile::tempdir().unwrap();
+        let broken = write_epub(dir2.path(), PACKAGE, &[("Text/ch1.xhtml", b"<p/>")]);
+        let check = Epub::open(&broken).unwrap().check().unwrap();
+        assert!(check.problems.iter().any(|p| p == "missing Text/ch2.xhtml"), "{:?}", check.problems);
     }
 }

@@ -18,6 +18,7 @@ use omaread_core::speed::{ReadingSpeed, format_minutes};
 use omaread_core::theme::Theme;
 
 use crate::annotations_view::{AnnotationsPanel, NoteEditor, SelectionBar};
+use crate::help_view::HelpView;
 use crate::keys::{Action, Context, Keymap};
 use crate::library_view::LibraryView;
 use crate::reader::{Event, Location, Reader, Selection, Sentence};
@@ -55,6 +56,7 @@ pub struct Window {
     toc: Rc<TocView>,
     toc_items: RefCell<Vec<TocItem>>,
     palette: Rc<Palette>,
+    help: Rc<HelpView>,
     tts: Tts,
     speech: RefCell<Option<Speech>>,
     tts_bar: gtk::Label,
@@ -84,6 +86,8 @@ pub struct Window {
     toast_timer: RefCell<Option<glib::SourceId>>,
     theming: Rc<RefCell<Theming>>,
     keymap: RefCell<Keymap>,
+    /// The config file's stamp when the keymap was built, to notice edits.
+    config_stamp: Cell<Option<u64>>,
     db: Option<Db>,
     service: RefCell<Option<Rc<Service>>>,
     /// The open book and where we are in it.
@@ -189,6 +193,7 @@ impl Window {
             }
         });
         let palette = Palette::new();
+        let help = HelpView::new();
         let (tts_tx, tts_rx) = async_channel::unbounded::<tts::Event>();
         let tts = Tts::start(tts_tx);
         let tts_bar = gtk::Label::builder()
@@ -241,6 +246,7 @@ impl Window {
         let overlay = gtk::Overlay::new();
         overlay.set_child(Some(&stack));
         overlay.add_overlay(&palette.root);
+        overlay.add_overlay(&help.root);
         overlay.add_overlay(&toast);
         window.set_content(Some(&overlay));
 
@@ -258,6 +264,7 @@ impl Window {
             toc,
             toc_items: RefCell::default(),
             palette,
+            help,
             tts,
             speech: RefCell::default(),
             tts_bar,
@@ -285,7 +292,8 @@ impl Window {
             toast,
             toast_timer: RefCell::default(),
             theming,
-            keymap: RefCell::default(),
+            keymap: RefCell::new(Keymap::new(&config.keymap)),
+            config_stamp: Cell::new(Config::fingerprint()),
             db,
             service: RefCell::default(),
             current: RefCell::default(),
@@ -342,6 +350,16 @@ impl Window {
         });
         win.me.replace(Rc::downgrade(&win));
         *this.borrow_mut() = Some(win.clone());
+
+        // Follow config.toml: a rebinding takes effect without a restart.
+        glib::timeout_add_local(Duration::from_millis(1000), {
+            let win = Rc::downgrade(&win);
+            move || {
+                let Some(win) = win.upgrade() else { return glib::ControlFlow::Break };
+                win.reload_config();
+                glib::ControlFlow::Continue
+            }
+        });
 
         let service = Service::start(paths, config.library_folders(), {
             let win = Rc::downgrade(&win);
@@ -466,6 +484,7 @@ impl Window {
         self.save_speed();
         self.toc.close();
         self.palette.close();
+        self.help.close();
         self.search.close();
         self.search.clear();
         if let Some(current) = self.current.take() {
@@ -485,7 +504,9 @@ impl Window {
     }
 
     fn context(&self) -> Context {
-        if self.stack.visible_child_name().as_deref() != Some(READER) {
+        if self.help.is_open() {
+            Context::Help
+        } else if self.stack.visible_child_name().as_deref() != Some(READER) {
             Context::Library
         } else if self.toc.is_open() {
             Context::Toc
@@ -771,6 +792,19 @@ impl Window {
         }
         let href = self.last_location.borrow().as_ref().and_then(|l| l.toc_href.clone());
         self.toc.open(href.as_deref());
+    }
+
+    fn open_help(&self) {
+        self.help.open();
+    }
+
+    fn close_help(&self) {
+        self.help.close();
+        if self.stack.visible_child_name().as_deref() == Some(READER) {
+            self.reader.view.grab_focus();
+        } else {
+            self.library.focus();
+        }
     }
 
     fn close_palette(&self) {
@@ -1414,6 +1448,17 @@ impl Window {
         self.window.add_controller(keys);
     }
 
+    /// Re-read config.toml when it changes and rebuild the keymap.
+    fn reload_config(&self) {
+        let stamp = Config::fingerprint();
+        if stamp == self.config_stamp.get() {
+            return;
+        }
+        self.config_stamp.set(stamp);
+        let config = Config::load();
+        *self.keymap.borrow_mut() = Keymap::new(&config.keymap);
+    }
+
     pub fn handle_key(&self, key: gtk::gdk::Key, mods: gtk::gdk::ModifierType) -> glib::Propagation {
         let context = self.context();
 
@@ -1485,8 +1530,8 @@ impl Window {
                 self.run(context, action);
                 glib::Propagation::Stop
             }
-            // While reading, the page never acts on keys itself.
-            None if context == Context::Reader => glib::Propagation::Stop,
+            // While reading (or over the help), the page never acts on keys itself.
+            None if matches!(context, Context::Reader | Context::Help) => glib::Propagation::Stop,
             None => glib::Propagation::Proceed,
         }
     }
@@ -1499,6 +1544,11 @@ impl Window {
                 call("next")
             }
             (Context::Reader, Action::Toc) => self.open_toc(),
+            (Context::Reader | Context::Library, Action::Help) => self.open_help(),
+            (Context::Help, Action::Move(_, dy)) => self.help.scroll(dy),
+            (Context::Help, Action::First) => self.help.top(),
+            (Context::Help, Action::Last) => self.help.bottom(),
+            (Context::Help, Action::Close) => self.close_help(),
             (Context::Reader | Context::Library, Action::CommandLine) => self.palette.open(context),
             (Context::Reader, Action::Search) => self.open_search(),
             (Context::Reader | Context::Search, Action::NextHit) => self.go_to_hit(self.search.step(1)),

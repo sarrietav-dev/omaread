@@ -18,6 +18,8 @@ bin/omaread-install            # builds and installs to ~/.local
 bin/omaread-install --default  # …and makes Omaread the app for EPUB files
 ```
 
+Or from the AUR: `yay -S omaread-git` (the PKGBUILD is in `packaging/aur/`).
+
 Omaread reads the EPUBs under `~/Documents/Books`; each folder is a shelf.
 Other folders go in `~/.config/omaread/config.toml`:
 
@@ -27,6 +29,9 @@ folders = ["~/Documents/Books", "/mnt/nas/books"]
 ```
 
 ## Keys
+
+Press `?` anywhere for this list on screen. Any binding can be changed in
+`config.toml` — the app re-reads it as you edit.
 
 Library
 
@@ -66,6 +71,23 @@ Reading
 | `T` | cycle theme: Omarchy, light, dark, sepia |
 | `i` | toggle the status line |
 | `q` / Esc | back to the library |
+
+Rebinding, in `~/.config/omaread/config.toml`. Actions are named; a listed
+action keeps only the keys you give it:
+
+```toml
+[keymap.reader]
+next_page = ["j", "l", "space"]
+prev_page = ["k", "h"]
+speak = "p"
+
+[keymap.library]
+open = ["enter", "o"]
+```
+
+Key names read as they do above (`j`, `G`, `space`, `ctrl+o`, `enter`,
+`shift+tab`, `page_down`). Unknown contexts, actions and keys are ignored
+with a note on stderr.
 
 Reading settings (theme, font, size, line height, justification,
 hyphenation, margins, width, columns, pages or scroll, how much of the
@@ -112,7 +134,9 @@ Commands run without a shell, and a selection never becomes an option
 supports it. `omaread lookup d goroutine` prints what the card would show.
 `omaread status` lists what you're reading, most recent first; `omaread
 status --json` gives the same with chapter, progress and time left, for a
-bar or a script.
+bar or a script. `omaread check-library` opens every book in the library
+and reports the ones that won't (`--json` for machines); it's the smoke
+test for a pile of EPUBs.
 
 Reading aloud goes through speech-dispatcher (so your piper voices work),
 one sentence at a time with the sentence highlighted; it turns pages and

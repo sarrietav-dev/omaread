@@ -230,8 +230,9 @@ sentence-by-sentence without the mouse.
 
 ## Storage
 
-* `~/.config/omaread/config.toml`: settings, keymap and providers. Hot
-  reloaded too, and every option is also in the settings overlay.
+* `~/.config/omaread/config.toml`: settings, keymap and providers. The
+  keymap is hot reloaded; every reading option is also in the settings
+  overlay.
 * `~/.local/share/omaread/omaread.db` (SQLite, WAL): books, shelves,
   progress, bookmarks, annotations, per-book overrides, reading stats, lookup
   cache. Schema migrations ship in the binary.

@@ -57,6 +57,7 @@ pub fn reader_commands() -> Vec<Entry> {
         l("Export highlights as Markdown", ":export", "export"),
         l("Export highlights as JSON", ":export json", "export json"),
         l("Go to… (42%, p 120, ch 7)", ":", ""),
+        a("Help", "?", Help),
         a("Back to the library", "q", Close),
         a("Quit", "ctrl+q", Quit),
     ]
@@ -74,6 +75,7 @@ pub fn library_commands() -> Vec<Entry> {
         a("First book", "gg", First),
         a("Last book", "G", Last),
         a("Rescan the library", "gr", Rescan),
+        a("Help", "?", Help),
         a("Quit", "q", Quit),
     ]
 }

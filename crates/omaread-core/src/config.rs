@@ -4,8 +4,13 @@
 //! ```toml
 //! [library]
 //! folders = ["~/Documents/Books"]
+//!
+//! [keymap.reader]
+//! next_page = ["j", "l", "space"]
+//! prev_page = ["k", "h"]
 //! ```
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::Deserialize;
@@ -15,7 +20,29 @@ use serde::Deserialize;
 pub struct Config {
     pub library: LibraryConfig,
     pub lookup: LookupConfig,
+    /// `[keymap.<context>] <action> = ["key", …]` rebinds the defaults.
+    pub keymap: Keymap,
 }
+
+/// One binding's keys: `["j", "space"]`, or a lone `"j"`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum Keys {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl Keys {
+    pub fn list(&self) -> Vec<String> {
+        match self {
+            Keys::One(k) => vec![k.clone()],
+            Keys::Many(ks) => ks.clone(),
+        }
+    }
+}
+
+/// Context → action → keys, as read from `[keymap.<context>]`.
+pub type Keymap = BTreeMap<String, BTreeMap<String, Keys>>;
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
@@ -38,7 +65,7 @@ pub struct LibraryConfig {
 
 impl Default for Config {
     fn default() -> Config {
-        Config { library: LibraryConfig::default(), lookup: LookupConfig::default() }
+        Config { library: LibraryConfig::default(), lookup: LookupConfig::default(), keymap: Keymap::new() }
     }
 }
 
@@ -74,6 +101,14 @@ impl Config {
     /// The library folders, with `~` expanded.
     pub fn library_folders(&self) -> Vec<PathBuf> {
         self.library.folders.iter().map(|f| expand(f)).collect()
+    }
+
+    /// A cheap stamp of the config file, to notice edits without re-reading
+    /// it on every tick. `None` when there is no file.
+    pub fn fingerprint() -> Option<u64> {
+        let meta = std::fs::metadata(Config::path()).ok()?;
+        let mtime = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_nanos() as u64)?;
+        Some(mtime ^ meta.len().rotate_left(17))
     }
 }
 
@@ -116,5 +151,17 @@ mod tests {
         let c = Config::parse("[library]\nfolders = [\"/srv/books\", \"~/x\"]").unwrap();
         assert_eq!(c.library_folders()[0], PathBuf::from("/srv/books"));
         assert!(c.library_folders()[1].ends_with("x"));
+    }
+
+    #[test]
+    fn keymap_takes_a_list_or_a_single_key() {
+        let c = Config::parse(
+            "[keymap.reader]\nnext_page = [\"j\", \"space\"]\nprev_page = \"k\"\n[keymap.library]\nopen = [\"enter\", \"o\"]\n",
+        )
+        .unwrap();
+        assert_eq!(c.keymap["reader"]["next_page"].list(), vec!["j", "space"]);
+        assert_eq!(c.keymap["reader"]["prev_page"].list(), vec!["k"]);
+        assert_eq!(c.keymap["library"]["open"].list(), vec!["enter", "o"]);
+        assert!(Config::parse("").unwrap().keymap.is_empty());
     }
 }

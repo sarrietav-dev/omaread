@@ -204,6 +204,21 @@ list.search-list > row.header {{ padding-top: {md}px; }}
 list.search-list > row:selected {{ background-color: {selected_fill}; }}
 list.search-list > row:selected b {{ color: {accent_text}; }}
 
+/* The `?` help */
+.help {{ min-width: {help_w}px; }}
+.help .heading {{
+  font-size: {body_small}px;
+  font-weight: bold;
+  color: {accent_text};
+  margin-top: {md}px;
+}}
+.help .key {{
+  min-width: {help_key}px;
+  color: {accent_text};
+  font-feature-settings: "tnum";
+}}
+.help .what {{ color: {fg}; }}
+
 /* Library */
 .library-rail-scroller {{
   min-width: {rail}px;
@@ -293,6 +308,8 @@ progressbar.book-progress > trough > progress {{
         hl_magenta = t.highlights[4],
         panel_bottom = t.space(40.0),
         progress = t.space(3.0).max(2),
+        help_w = t.space(520.0),
+        help_key = t.space(150.0),
         accent_text = t.accent.lifted(bg, fg, 4.5),
         urgent = t.urgent,
         rule = fg.alpha(c.normal_border_alpha * 0.5),

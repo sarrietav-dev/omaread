@@ -1,5 +1,6 @@
 mod annotations_view;
 mod assets;
+mod help_view;
 mod keys;
 mod library_view;
 mod lookup_view;
@@ -28,6 +29,7 @@ fn main() -> glib::ExitCode {
         Some("import-foliate") => return import_foliate(),
         Some("lookup") => return lookup(&args[2..]),
         Some("status") => return status(),
+        Some("check-library") => return check_library(),
         _ => {}
     }
 
@@ -208,6 +210,55 @@ fn scan() -> glib::ExitCode {
             glib::ExitCode::FAILURE
         }
     }
+}
+
+/// `omaread check-library [--json]`: open every book in the library and say
+/// what's wrong with the ones that won't. The smoke test the plan asks for.
+fn check_library() -> glib::ExitCode {
+    use omaread_core::{epub, library};
+
+    let config = omaread_core::config::Config::load();
+    let paths = library::Paths::from_env();
+    let scanned = paths.open_db().and_then(|mut db| {
+        let report = library::scan(&mut db, &config.library_folders(), &paths.covers)?;
+        Ok((report, library::load(&db)?))
+    });
+    let (report, books) = match scanned {
+        Ok(pair) => pair,
+        Err(e) => {
+            eprintln!("omaread: {e}");
+            return glib::ExitCode::FAILURE;
+        }
+    };
+
+    let mut checked: Vec<serde_json::Value> = Vec::new();
+    let mut problems = 0usize;
+    for book in &books {
+        let (title, chapters, issues) = match &book.error {
+            Some(e) => (book.title.clone(), 0, vec![e.clone()]),
+            None => match epub::Epub::open(&book.path).and_then(|mut e| e.check()) {
+                Ok(check) => (check.title, check.chapters, check.problems),
+                Err(e) => (book.title.clone(), 0, vec![e.to_string()]),
+            },
+        };
+        if !issues.is_empty() {
+            problems += 1;
+            eprintln!("  ✗ {} — {}", title, issues.join("; "));
+        }
+        checked.push(serde_json::json!({
+            "title": title,
+            "path": book.path,
+            "chapters": chapters,
+            "problems": issues,
+        }));
+    }
+
+    if std::env::args().any(|a| a == "--json") {
+        println!("{}", serde_json::json!({ "books": checked, "problems": problems }));
+    } else {
+        println!("{} books checked ({} files), {} with problems", books.len(), report.total, problems);
+    }
+    if problems > 0 { glib::ExitCode::FAILURE } else { glib::ExitCode::SUCCESS }
 }
 
 /// Debug builds only: drive the window over D-Bus without keyboard focus.
