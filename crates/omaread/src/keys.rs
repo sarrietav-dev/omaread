@@ -20,6 +20,15 @@ pub enum Action {
     Bigger,
     Smaller,
     CycleTheme,
+    ToggleBookmark,
+    Highlights,
+    Bookmarks,
+    // Selection and annotations
+    Highlight,
+    Color(usize),
+    Note,
+    Copy,
+    Delete,
     // Library and panels
     Move(i32, i32),
     Open,
@@ -41,11 +50,16 @@ pub enum Context {
     Toc,
     /// The reading settings are open over the book.
     Settings,
+    /// Text is selected, or a highlight was clicked.
+    Selection,
+    /// The highlights or bookmarks panel is open.
+    Annotations,
 }
 
 #[derive(Default)]
 pub struct Keymap {
     pending_g: bool,
+    pending_d: bool,
 }
 
 impl Keymap {
@@ -55,6 +69,10 @@ impl Keymap {
         let shift = mods.contains(ModifierType::SHIFT_MASK);
         // Shift+t is T, however the keyboard layer reports it.
         let ch = key.to_unicode().map(|c| if shift && c.is_ascii_lowercase() { c.to_ascii_uppercase() } else { c });
+
+        if std::mem::take(&mut self.pending_d) {
+            return (ch == Some('d') && context == Context::Annotations).then_some(Action::Delete);
+        }
 
         if std::mem::take(&mut self.pending_g) {
             return match (ch, context) {
@@ -73,8 +91,12 @@ impl Keymap {
             };
         }
 
-        if ch == Some('g') {
+        if ch == Some('g') && context != Context::Selection {
             self.pending_g = true;
+            return None;
+        }
+        if ch == Some('d') && context == Context::Annotations {
+            self.pending_d = true;
             return None;
         }
 
@@ -83,6 +105,8 @@ impl Keymap {
             Context::Library => library(key, ch, shift),
             Context::Toc => toc(key, ch),
             Context::Settings => settings(key, ch),
+            Context::Selection => selection(key, ch),
+            Context::Annotations => annotations(key, ch),
         }
     }
 }
@@ -110,7 +134,45 @@ fn reader(key: Key, ch: Option<char>, shift: bool) -> Option<Action> {
         '+' | '=' => Some(Action::Bigger),
         '-' => Some(Action::Smaller),
         'T' => Some(Action::CycleTheme),
+        'm' => Some(Action::ToggleBookmark),
+        'A' => Some(Action::Highlights),
+        '\'' => Some(Action::Bookmarks),
         'q' => Some(Action::Close),
+        _ => None,
+    }
+}
+
+fn selection(key: Key, ch: Option<char>) -> Option<Action> {
+    if key == Key::Escape {
+        return Some(Action::Close);
+    }
+    match ch? {
+        'h' => Some(Action::Highlight),
+        c @ '1'..='5' => Some(Action::Color(c as usize - '1' as usize)),
+        'a' => Some(Action::Note),
+        'y' => Some(Action::Copy),
+        'x' => Some(Action::Delete),
+        'q' => Some(Action::Close),
+        _ => None,
+    }
+}
+
+fn annotations(key: Key, ch: Option<char>) -> Option<Action> {
+    match key {
+        Key::Up => return Some(Action::Move(0, -1)),
+        Key::Down => return Some(Action::Move(0, 1)),
+        Key::Return | Key::KP_Enter => return Some(Action::Open),
+        Key::Escape => return Some(Action::Close),
+        Key::Delete => return Some(Action::Delete),
+        _ => {}
+    }
+    match ch? {
+        'j' => Some(Action::Move(0, 1)),
+        'k' => Some(Action::Move(0, -1)),
+        'G' => Some(Action::Last),
+        'a' => Some(Action::Note),
+        'x' => Some(Action::Delete),
+        'q' | 'A' | '\'' => Some(Action::Close),
         _ => None,
     }
 }
@@ -210,6 +272,15 @@ mod tests {
         assert_eq!(press(&mut map, Context::Reader, 'g'), None);
         assert_eq!(press(&mut map, Context::Reader, 'x'), None);
         assert_eq!(press(&mut map, Context::Reader, 'j'), Some(Action::NextPage));
+    }
+
+    #[test]
+    fn dd_deletes_in_the_annotations_panel_only() {
+        let mut map = Keymap::default();
+        assert_eq!(press(&mut map, Context::Annotations, 'd'), None);
+        assert_eq!(press(&mut map, Context::Annotations, 'd'), Some(Action::Delete));
+        assert_eq!(press(&mut map, Context::Annotations, 'j'), Some(Action::Move(0, 1)));
+        assert_eq!(press(&mut map, Context::Selection, '3'), Some(Action::Color(2)));
     }
 
     #[test]

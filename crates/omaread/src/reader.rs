@@ -43,14 +43,53 @@ pub enum Event {
     ExternalLink {
         href: String,
     },
-    Selection {
-        text: String,
-        lang: Option<String>,
+    Selection(Selection),
+    SelectionCleared,
+    /// A highlight was clicked.
+    AnnotationClick {
+        cfi: String,
+        rect: Option<Rect>,
+    },
+    /// Chapter and position for CFIs, answering `locate`.
+    Located {
+        items: Vec<Located>,
     },
     /// Not from the page: its process died. `gave_up` when it kept dying and
     /// the book was closed rather than reopened again.
     #[serde(skip)]
     PageCrashed { gave_up: bool },
+}
+
+#[derive(Debug, Default, Clone, Deserialize)]
+#[allow(dead_code)] // `lang` is for lookups (M7)
+pub struct Selection {
+    pub text: String,
+    pub cfi: String,
+    pub lang: Option<String>,
+    #[serde(default)]
+    pub chapter: String,
+    #[serde(default)]
+    pub fraction: f64,
+    pub rect: Option<Rect>,
+}
+
+/// Where something is on the page, in the page's pixels.
+#[derive(Debug, Default, Clone, Copy, Deserialize)]
+#[allow(dead_code)]
+pub struct Rect {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
+#[derive(Debug, Default, Clone, Deserialize)]
+pub struct Located {
+    pub cfi: String,
+    #[serde(default)]
+    pub chapter: String,
+    #[serde(default)]
+    pub fraction: f64,
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]
@@ -64,17 +103,32 @@ pub struct Metadata {
     pub identifier: Option<String>,
 }
 
+/// `null` from the page reads as the default: foliate-js reports a location
+/// before a section has finished laying out, with its numbers still null.
+fn null_default<'de, D, T>(d: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + Deserialize<'de>,
+{
+    Ok(Option::<T>::deserialize(d)?.unwrap_or_default())
+}
+
 #[derive(Debug, Default, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
 pub struct Location {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub fraction: f64,
     pub cfi: Option<String>,
     pub location: Option<Span>,
     pub section: Option<Span>,
     pub toc_label: Option<String>,
     pub toc_href: Option<String>,
+    /// Bookmarks on the page in view.
+    #[serde(default)]
+    pub bookmarks: Vec<String>,
+    /// Where the page in view starts: what a bookmark points at.
+    pub page_start: Option<String>,
     pub page_label: Option<String>,
     /// foliate-js's estimate in minutes at its fixed pace; we rescale it.
     pub time: Option<TimeLeft>,
@@ -82,13 +136,17 @@ pub struct Location {
 
 #[derive(Debug, Default, Clone, Copy, Deserialize)]
 pub struct TimeLeft {
+    #[serde(default, deserialize_with = "null_default")]
     pub section: f64,
+    #[serde(default, deserialize_with = "null_default")]
     pub total: f64,
 }
 
 #[derive(Debug, Default, Clone, Copy, Deserialize)]
 pub struct Span {
+    #[serde(default, deserialize_with = "null_default")]
     pub current: u64,
+    #[serde(default, deserialize_with = "null_default")]
     pub total: u64,
 }
 
@@ -301,5 +359,19 @@ impl Reader {
             // Queued until the page is back; the window restores the palette on Ready.
             glib::idle_add_local_once(move || reader.open(path, cfi.as_deref()));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_location_before_layout_still_parses() {
+        let json = r#"{"type":"relocate","fraction":null,"cfi":"epubcfi(/6/22!/4)","section":{"current":10,"total":45},
+            "location":{"current":null,"next":null,"total":1055},"time":{"section":null,"total":null},"bookmarks":[]}"#;
+        let Ok(Event::Relocate(l)) = serde_json::from_str::<Event>(json) else { panic!("did not parse") };
+        assert_eq!(l.fraction, 0.0);
+        assert_eq!(l.location.unwrap().total, 1055);
     }
 }

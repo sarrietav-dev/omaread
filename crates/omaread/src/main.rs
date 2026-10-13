@@ -1,3 +1,4 @@
+mod annotations_view;
 mod assets;
 mod keys;
 mod library_view;
@@ -18,8 +19,10 @@ const APP_ID: &str = "io.github.sarrietav_dev.Omaread";
 
 fn main() -> glib::ExitCode {
     let args: Vec<String> = std::env::args().collect();
-    if args.get(1).map(String::as_str) == Some("scan") {
-        return scan();
+    match args.get(1).map(String::as_str) {
+        Some("scan") => return scan(),
+        Some("import-foliate") => return import_foliate(),
+        _ => {}
     }
 
     // Debug builds can run beside the real app under another id (for tests).
@@ -68,6 +71,32 @@ fn main() -> glib::ExitCode {
     app.run()
 }
 
+/// `omaread import-foliate`: bring Foliate's positions, highlights and
+/// bookmarks over (again). Anything already here is kept.
+fn import_foliate() -> glib::ExitCode {
+    let paths = omaread_core::library::Paths::from_env();
+    let config = omaread_core::config::Config::load();
+    let result = paths.open_db().and_then(|mut db| {
+        omaread_core::library::scan(&mut db, &config.library_folders(), &paths.covers)?;
+        let books = omaread_core::library::load(&db)?;
+        let dir = omaread_core::annotations::foliate_dir();
+        omaread_core::annotations::import_foliate(&db, &dir, &books, omaread_core::library::now())
+    });
+    match result {
+        Ok(r) => {
+            println!(
+                "{} books matched ({} not in the library): {} positions, {} highlights, {} bookmarks",
+                r.books, r.unmatched, r.positions, r.annotations, r.bookmarks
+            );
+            glib::ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("omaread: import failed: {e}");
+            glib::ExitCode::FAILURE
+        }
+    }
+}
+
 /// `omaread scan`: refresh the library without opening a window.
 fn scan() -> glib::ExitCode {
     let config = omaread_core::config::Config::load();
@@ -113,9 +142,12 @@ fn install_debug_actions(app: &adw::Application, win: &Rc<window::Window>) {
         let win = weak.clone();
         let (Some(win), Some(spec)) = (win.upgrade(), param.and_then(|p| p.str().map(String::from))) else { return };
         if let Some(text) = spec.strip_prefix("type:") {
-            if let Some(focus) = gtk::prelude::GtkWindowExt::focus(&win.window).and_downcast::<gtk::Text>() {
-                focus.set_text(&format!("{}{text}", focus.text()));
-                focus.set_position(-1);
+            let focus = gtk::prelude::GtkWindowExt::focus(&win.window);
+            if let Some(field) = focus.clone().and_downcast::<gtk::Text>() {
+                field.set_text(&format!("{}{text}", field.text()));
+                field.set_position(-1);
+            } else if let Some(view) = focus.and_downcast::<gtk::TextView>() {
+                view.buffer().insert_at_cursor(text);
             }
             return;
         }

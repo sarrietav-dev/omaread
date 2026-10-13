@@ -52,6 +52,11 @@ Reading
 | `Ctrl-o` / `Ctrl-i` | back / forward |
 | `t` | table of contents (`j`/`k` move, `h`/`l` fold, Enter go) |
 | `:` | command line: `:42%`, `:p 120`, `:ch 7` |
+| select text | `h` highlight, `1`–`5` color, `a` note, `y` copy |
+| click a highlight | `a` note, `1`–`5` recolor, `x` delete |
+| `m` | bookmark this page (again to remove) |
+| `A` / `'` | highlights / bookmarks (`j`/`k`, Enter go, `a` note, `dd` delete) |
+| `:export` | highlights and notes to `~/Documents/Omaread/<title>.md` (`:export json` too) |
 | `,` | reading settings (`j`/`k` move, `h`/`l` change) |
 | `+` / `-` | bigger / smaller text |
 | `T` | cycle theme: Omarchy, light, dark, sepia |
@@ -66,7 +71,11 @@ book's theme.
 
 For hyphenation, install the dictionaries: `sudo pacman -S hyphen-en hyphen-es`.
 
-Your place in every book is saved as you read. The status line shows the
+Your place in every book is saved as you read.
+
+Coming from Foliate? On first run Omaread brings over your reading
+positions, highlights, notes and bookmarks (`omaread import-foliate` does it
+again; nothing already in Omaread is overwritten). The status line shows the
 chapter, time left in the chapter and the book (learned from your own reading
 pace), the page and how far through you are.
 

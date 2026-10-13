@@ -2,6 +2,7 @@
 //! (later) the library, storage and providers. Kept free of GTK so it can be
 //! tested on its own.
 
+pub mod annotations;
 pub mod color;
 pub mod command;
 pub mod config;

@@ -49,6 +49,23 @@ const MIGRATIONS: &[&str] = &[
         prefs     TEXT NOT NULL
     );
     "#,
+    // 4: highlights, notes and bookmarks
+    r#"
+    CREATE TABLE annotations (
+        id          INTEGER PRIMARY KEY,
+        identity    TEXT NOT NULL,
+        kind        TEXT NOT NULL,
+        cfi         TEXT NOT NULL,
+        color       TEXT NOT NULL DEFAULT '',
+        text        TEXT NOT NULL DEFAULT '',
+        note        TEXT NOT NULL DEFAULT '',
+        chapter     TEXT NOT NULL DEFAULT '',
+        fraction    REAL NOT NULL DEFAULT 0,
+        created_at  INTEGER NOT NULL,
+        updated_at  INTEGER NOT NULL,
+        UNIQUE (identity, kind, cfi)
+    );
+    "#,
 ];
 
 pub struct Db {
@@ -89,6 +106,10 @@ impl Db {
             let _ = std::fs::create_dir_all(dir);
         }
         Db::init(Connection::open(path)?)
+    }
+
+    pub(crate) fn conn(&self) -> &Connection {
+        &self.conn
     }
 
     pub fn in_memory() -> Result<Db, Error> {

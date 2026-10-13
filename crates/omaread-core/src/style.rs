@@ -145,6 +145,32 @@ listview.toc-list > row:selected {{
 }}
 listview.toc-list expander {{ min-width: {body_small}px; color: {muted}; }}
 
+.selection-bar .excerpt {{ font-size: {body_small}px; color: {fg}; }}
+.card .excerpt {{ font-family: serif; font-size: {body}px; font-style: italic; color: {fg}; }}
+textview.note-text, textview.note-text text {{
+  background-color: {normal_fill};
+  color: {fg};
+  font-size: {body_small}px;
+  padding: {sm}px;
+}}
+textview.note-text {{ border: {hairline}px solid {rule}; }}
+list.annotation-list {{ background: none; }}
+list.annotation-list > row {{
+  padding: {md}px {sm}px;
+  border: {nbw}px solid transparent;
+  border-bottom: {hairline}px solid {rule};
+}}
+list.annotation-list > row:selected {{ background-color: {selected_fill}; }}
+list.annotation-list .excerpt {{ font-size: {body_small}px; padding-left: {md}px; border-left: {thick}px solid {hl_yellow}; }}
+list.annotation-list .note {{ font-size: {body_small}px; color: {muted}; padding-left: {md}px; }}
+list.annotation-list .swatch-red {{ border-left-color: {hl_red}; }}
+list.annotation-list .swatch-green {{ border-left-color: {hl_green}; }}
+list.annotation-list .swatch-blue {{ border-left-color: {hl_blue}; }}
+list.annotation-list .swatch-magenta {{ border-left-color: {hl_magenta}; }}
+list.annotation-list .swatch-underline, list.annotation-list .swatch-squiggly,
+list.annotation-list .swatch-strikethrough {{ border-left-color: {muted}; }}
+.annotations-panel {{ min-width: {panel_wide}px; }}
+
 entry.cmdline {{
   margin: 0;
   padding: {xs}px {row_x}px;
@@ -238,6 +264,13 @@ progressbar.book-progress > trough > progress {{
         xs = t.space(3.0),
         rail = t.space(200.0),
         panel_w = t.space(340.0),
+        panel_wide = t.space(420.0),
+        thick = t.space(3.0).max(2),
+        hl_red = t.highlights[0],
+        hl_yellow = t.highlights[1],
+        hl_green = t.highlights[2],
+        hl_blue = t.highlights[3],
+        hl_magenta = t.highlights[4],
         panel_bottom = t.space(40.0),
         progress = t.space(3.0).max(2),
         accent_text = t.accent.lifted(bg, fg, 4.5),

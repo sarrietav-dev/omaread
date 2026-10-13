@@ -4,6 +4,8 @@
 // message.
 
 import { makeBook } from '../foliate-js/view.js'
+import { Overlayer } from '../foliate-js/overlayer.js'
+import * as CFI from '../foliate-js/epubcfi.js'
 
 const emit = msg => globalThis.webkit.messageHandlers.omaread.postMessage(JSON.stringify(msg))
 
@@ -11,6 +13,11 @@ const fileInput = document.getElementById('file')
 
 let view = null
 let palette = null
+// Highlights by CFI ({ value, color }), and bookmark CFIs, as Rust last sent them.
+let highlights = new Map()
+let bookmarks = []
+// The live selection: where it is, so it can be highlighted.
+let selection = null
 let pendingOpen = {}
 
 // Mirrors ReaderPrefs in Rust; replaced wholesale by setPrefs.
@@ -102,8 +109,13 @@ const bookCSS = () => {
 `]
 }
 
+const redrawHighlights = () => {
+    for (const a of highlights.values()) view?.addAnnotation(a).catch?.(() => {})
+}
+
 const applyPalette = () => {
     if (!palette) return
+    redrawHighlights()
     const root = document.documentElement.style
     root.setProperty('--bg', palette.bg)
     root.setProperty('--fg', palette.fg)
@@ -120,6 +132,41 @@ const applyLayout = () => {
     r.setAttribute('max-inline-size', `${prefs.max_width}px`)
     r.setAttribute('max-column-count', prefs.columns || 2)
     r.setStyles?.(bookCSS())
+}
+
+const LINE_STYLES = ['underline', 'squiggly', 'strikethrough']
+const HIGHLIGHT_NAMES = ['red', 'yellow', 'green', 'blue', 'magenta']
+
+const colorOf = name => {
+    const i = HIGHLIGHT_NAMES.indexOf(name)
+    return palette?.highlights?.[i >= 0 ? i : 1] ?? 'yellow'
+}
+
+// Where a range is on screen, in the page's coordinates (iframes are
+// transformed by the paginator, so map through the frame).
+const rectOf = range => {
+    const frame = range.startContainer?.ownerDocument?.defaultView?.frameElement
+    const f = frame?.getBoundingClientRect() ?? { left: 0, top: 0 }
+    const m = frame ? getComputedStyle(frame).transform.match(/matrix\((.+)\)/) : null
+    const [sx, , , sy] = m?.[1]?.split(/\s*,\s*/).map(Number) ?? [1, 0, 0, 1]
+    const rects = Array.from(range.getClientRects())
+    if (!rects.length) return null
+    const first = rects[0], last = rects.at(-1)
+    const left = Math.min(...rects.map(r => r.left)) * sx + f.left
+    const right = Math.max(...rects.map(r => r.right)) * sx + f.left
+    return {
+        x: Math.round(left), y: Math.round(first.top * sy + f.top),
+        width: Math.round(right - left), height: Math.round((last.bottom - first.top) * sy),
+    }
+}
+
+// Which bookmarks fall on the page in view.
+const visibleBookmarks = cfi => {
+    if (!cfi || !bookmarks.length) return []
+    try {
+        const start = CFI.collapse(cfi), end = CFI.collapse(cfi, true)
+        return bookmarks.filter(b => CFI.compare(b, start) >= 0 && CFI.compare(b, end) <= 0)
+    } catch { return [] }
 }
 
 const metadataOf = book => {
@@ -161,6 +208,8 @@ const open = async file => {
             time: time ?? null,
             tocLabel: tocItem?.label?.trim() ?? null,
             tocHref: tocItem?.href ?? null,
+            bookmarks: visibleBookmarks(cfi),
+            pageStart: (() => { try { return cfi ? CFI.collapse(cfi) : null } catch { return null } })(),
             pageLabel: pageItem?.label ?? null,
         })
     })
@@ -168,12 +217,44 @@ const open = async file => {
         e.preventDefault()
         emit({ type: 'external-link', href: e.detail.href })
     })
-    view.addEventListener('load', ({ detail: { doc } }) => {
-        doc.addEventListener('pointerup', () => {
+    view.addEventListener('load', ({ detail: { doc, index } }) => {
+        doc.addEventListener('pointerup', () => setTimeout(() => {
             const sel = doc.getSelection()
-            if (!sel.rangeCount || sel.isCollapsed) return
-            emit({ type: 'selection', text: sel.toString(), lang: langOf(sel.anchorNode?.parentElement) ?? null })
-        })
+            if (!sel.rangeCount || sel.isCollapsed) {
+                if (selection) emit({ type: 'selection-cleared' })
+                selection = null
+                return
+            }
+            const range = sel.getRangeAt(0)
+            const cfi = view.getCFI(index, range)
+            selection = { index, range, cfi }
+            emit({
+                type: 'selection',
+                text: sel.toString(),
+                cfi,
+                lang: langOf(range.commonAncestorContainer?.parentElement ?? range.commonAncestorContainer) ?? null,
+                chapter: view.getProgressOf(index, range)?.tocItem?.label?.trim() ?? '',
+                fraction: view.getSectionFractions()[index] ?? 0,
+                rect: rectOf(range),
+            })
+        }))
+    })
+    view.addEventListener('create-overlay', ({ detail: { index } }) => {
+        for (const a of highlights.values()) {
+            try {
+                if (view.resolveCFI(a.value).index === index) view.addAnnotation(a)
+            } catch {}
+        }
+    })
+    view.addEventListener('draw-annotation', ({ detail: { draw, annotation, doc, range } }) => {
+        if (LINE_STYLES.includes(annotation.color)) {
+            const node = range.startContainer
+            const el = node.nodeType === 1 ? node : node.parentElement
+            draw(Overlayer[annotation.color], { writingMode: doc.defaultView.getComputedStyle(el).writingMode })
+        } else draw(Overlayer.highlight, { color: colorOf(annotation.color) })
+    })
+    view.addEventListener('show-annotation', ({ detail: { value, range } }) => {
+        emit({ type: 'annotation-click', cfi: value, rect: rectOf(range) })
     })
 
     await view.open(book)
@@ -216,6 +297,60 @@ globalThis.omaread = {
     first: () => view?.renderer?.firstSection?.(),
     last: () => view?.renderer?.lastSection?.(),
     goTo: target => view?.goTo(target),
+    setHighlights(list) {
+        for (const a of highlights.values()) view?.deleteAnnotation(a)
+        highlights = new Map(list.map(a => [a.cfi, { value: a.cfi, color: a.color }]))
+        redrawHighlights()
+    },
+    addHighlight({ cfi, color }) {
+        const a = { value: cfi, color }
+        highlights.set(cfi, a)
+        view?.addAnnotation(a)
+        omaread.clearSelection()
+    },
+    removeHighlight(cfi) {
+        const a = highlights.get(cfi)
+        highlights.delete(cfi)
+        if (a) view?.deleteAnnotation(a)
+    },
+    setBookmarks(list) {
+        bookmarks = list
+    },
+    clearSelection() {
+        selection?.range?.startContainer?.ownerDocument?.getSelection()?.removeAllRanges()
+        selection = null
+    },
+    // For tests: select the n-th paragraph on the page in view, as a mouse would.
+    testSelect(n = 0, words = 6) {
+        const { doc } = view.renderer.getContents()[0]
+        const p = Array.from(doc.querySelectorAll('p')).filter(p => {
+            const r = p.getBoundingClientRect()
+            return p.textContent.trim().split(/\s+/).length > words && r.width > 0
+        })[n]
+        if (!p) return false
+        const walker = doc.createTreeWalker(p, NodeFilter.SHOW_TEXT)
+        const node = walker.nextNode()
+        const range = doc.createRange()
+        range.setStart(node, 0)
+        range.setEnd(node, Math.min(node.length, node.textContent.split(' ').slice(0, words).join(' ').length))
+        doc.getSelection().removeAllRanges()
+        doc.getSelection().addRange(range)
+        doc.dispatchEvent(new PointerEvent('pointerup'))
+        return true
+    },
+    // Chapter and position for CFIs stored without them (imports).
+    async locate(cfis) {
+        const fractions = view?.getSectionFractions() ?? []
+        const items = []
+        for (const cfi of cfis) {
+            try {
+                const { index } = view.resolveCFI(cfi)
+                const toc = await view.getTOCItemOf(cfi)
+                items.push({ cfi, chapter: toc?.label?.trim() ?? '', fraction: fractions[index] ?? 0 })
+            } catch {}
+        }
+        emit({ type: 'located', items })
+    },
     goToPage: label => {
         const item = view?.book.pageList?.find(p => String(p.label).trim() === String(label))
         if (item) return view.goTo(item.href)

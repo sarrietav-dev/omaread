@@ -14,10 +14,25 @@ pub enum Command {
     GotoPage(String),
     /// The n-th top-level entry of the table of contents, 1-based.
     GotoChapter(usize),
+    /// Write the book's highlights and notes out.
+    Export(ExportFormat),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportFormat {
+    Markdown,
+    Json,
 }
 
 pub fn parse(input: &str) -> Result<Command, String> {
     let input = input.trim().trim_start_matches(':').trim();
+    if let Some(rest) = input.strip_prefix("export").filter(|r| r.is_empty() || r.starts_with(' ')) {
+        return match rest.trim() {
+            "" | "md" | "markdown" => Ok(Command::Export(ExportFormat::Markdown)),
+            "json" => Ok(Command::Export(ExportFormat::Json)),
+            other => Err(format!("export as md or json, not {other}")),
+        };
+    }
     let rest = input
         .strip_prefix("goto ")
         .or_else(|| input.strip_prefix("go "))
@@ -60,6 +75,9 @@ mod tests {
         assert_eq!(parse("goto page xii"), Ok(Command::GotoPage("xii".into())));
         assert_eq!(parse(":ch 7"), Ok(Command::GotoChapter(7)));
         assert_eq!(parse(":120"), Ok(Command::GotoPage("120".into())));
+        assert_eq!(parse(":export"), Ok(Command::Export(ExportFormat::Markdown)));
+        assert_eq!(parse(":export json"), Ok(Command::Export(ExportFormat::Json)));
+        assert!(parse(":export pdf").is_err());
     }
 
     #[test]

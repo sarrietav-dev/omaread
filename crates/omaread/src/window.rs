@@ -9,15 +9,17 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 use omaread_core::config::Config;
 use omaread_core::db::{Db, Progress};
-use omaread_core::command::{self, Command};
+use omaread_core::annotations::{self, Annotation, Kind};
+use omaread_core::command::{self, Command, ExportFormat};
 use omaread_core::library::{self, Book, Paths};
 use omaread_core::prefs::ReaderPrefs;
 use omaread_core::speed::{ReadingSpeed, format_minutes};
 use omaread_core::theme::Theme;
 
+use crate::annotations_view::{AnnotationsPanel, NoteEditor, SelectionBar};
 use crate::keys::{Action, Context, Keymap};
 use crate::library_view::LibraryView;
-use crate::reader::{Event, Location, Reader};
+use crate::reader::{Event, Location, Reader, Selection};
 use crate::service::Service;
 use crate::settings_view::{Scope, SettingsView};
 use crate::toc_view::{TocItem, TocView};
@@ -31,6 +33,7 @@ const SAVE_DELAY: Duration = Duration::from_millis(800);
 
 const SPEED_SETTING: &str = "reading_speed";
 const PREFS_SETTING: &str = "reader_prefs";
+const FOLIATE_IMPORTED: &str = "foliate_imported";
 /// foliate-js counts a "location" as this many bytes of text.
 const BYTES_PER_LOCATION: f64 = 1500.0;
 /// The fixed pace foliate-js's time estimates assume, which we rescale.
@@ -46,6 +49,16 @@ pub struct Window {
     toc_items: RefCell<Vec<TocItem>>,
     cmdline: gtk::Entry,
     settings: Rc<SettingsView>,
+    selection_bar: SelectionBar,
+    note_editor: NoteEditor,
+    annotations_panel: Rc<AnnotationsPanel>,
+    /// The open book's highlights and bookmarks.
+    annotations: RefCell<Vec<Annotation>>,
+    /// What the selection bar is about: fresh text, or a highlight.
+    focus: RefCell<Option<Focus>>,
+    /// What the note editor will save to.
+    note_target: RefCell<Option<Focus>>,
+    last_color: RefCell<String>,
     /// Reading preferences for every book, and the open book's own, if any.
     prefs: RefCell<ReaderPrefs>,
     book_prefs: RefCell<Option<ReaderPrefs>>,
@@ -66,6 +79,12 @@ pub struct Window {
     /// The next relocation follows a page turn (not a jump), so it can teach the pace.
     turned: Cell<bool>,
     last_location: RefCell<Option<Location>>,
+}
+
+#[derive(Clone)]
+enum Focus {
+    Text(Selection),
+    Highlight(i64),
 }
 
 struct PageSeen {
@@ -161,6 +180,12 @@ impl Window {
         reader_overlay.add_overlay(&toc.root);
         reader_overlay.add_overlay(&cmdline);
         reader_overlay.add_overlay(&settings.root);
+        let selection_bar = SelectionBar::new();
+        let note_editor = NoteEditor::new();
+        let annotations_panel = AnnotationsPanel::new();
+        reader_overlay.add_overlay(&annotations_panel.root);
+        reader_overlay.add_overlay(&selection_bar.root);
+        reader_overlay.add_overlay(&note_editor.root);
 
         let stack = gtk::Stack::builder()
             .transition_type(gtk::StackTransitionType::Crossfade)
@@ -204,6 +229,13 @@ impl Window {
                     .unwrap_or_default(),
             ),
             book_prefs: RefCell::default(),
+            selection_bar,
+            note_editor,
+            annotations_panel,
+            annotations: RefCell::default(),
+            focus: RefCell::default(),
+            note_target: RefCell::default(),
+            last_color: RefCell::new("yellow".into()),
             toast,
             toast_timer: RefCell::default(),
             theming,
@@ -240,6 +272,7 @@ impl Window {
                 if let Some(win) = win.upgrade() {
                     win.library.set_scanning(false);
                     win.library.set_books(books);
+                    win.import_foliate_once();
                 }
             }
         });
@@ -330,6 +363,10 @@ impl Window {
                 .and_then(|s| ReaderPrefs::from_json(&s)),
         );
         self.apply_prefs();
+        self.close_overlays();
+        let list = self.db.as_ref().and_then(|db| db.annotations(&book.identity).ok()).unwrap_or_default();
+        self.annotations.replace(list);
+        self.push_annotations();
         self.status.section.set_label("");
         self.status.position.set_label("");
         self.reader.open(book.path.clone(), cfi.as_deref());
@@ -344,6 +381,7 @@ impl Window {
 
     /// Back to the library, keeping where we were.
     fn close_book(&self) {
+        self.close_overlays();
         self.save_progress();
         self.save_speed();
         self.toc.close();
@@ -371,6 +409,10 @@ impl Window {
             Context::Toc
         } else if self.settings.is_open() {
             Context::Settings
+        } else if self.annotations_panel.is_open() {
+            Context::Annotations
+        } else if self.selection_bar.is_open() {
+            Context::Selection
         } else {
             Context::Reader
         }
@@ -392,7 +434,34 @@ impl Window {
                 self.toc.set_items(&toc);
                 self.toc_items.replace(toc);
                 self.reader.view.grab_focus();
+                // Imported annotations come without a chapter; ask the book.
+                let unplaced: Vec<String> =
+                    self.annotations.borrow().iter().filter(|a| a.chapter.is_empty()).map(|a| a.cfi.clone()).collect();
+                if !unplaced.is_empty() {
+                    self.reader.call("locate", &serde_json::to_string(&unplaced).unwrap_or_default());
+                }
             }
+            Event::Selection(selection) => self.show_selection(selection),
+            Event::SelectionCleared => {
+                if matches!(*self.focus.borrow(), Some(Focus::Text(_))) {
+                    self.selection_bar.hide();
+                    self.focus.take();
+                }
+            }
+            Event::AnnotationClick { cfi, rect } => {
+                let found = self.annotations.borrow().iter().find(|a| a.cfi == cfi && a.kind == Kind::Highlight).cloned();
+                if let Some(a) = found {
+                    let note = if a.note.trim().is_empty() { String::new() } else { format!("\n\n{}", a.note.trim()) };
+                    self.selection_bar.show(
+                        &format!("{}{note}", a.text.trim()),
+                        "a note   1–5 color   x delete   y copy   esc",
+                        rect,
+                        self.page_size(),
+                    );
+                    self.focus.replace(Some(Focus::Highlight(a.id)));
+                }
+            }
+            Event::Located { items } => self.place_annotations(items),
             Event::Notice { message } => self.show_toast(&message, false),
             Event::BookError { message, stack } => {
                 eprintln!("omaread: could not open book: {message}\n{stack}");
@@ -402,13 +471,16 @@ impl Window {
                 self.library.focus();
             }
             Event::Relocate(location) => {
+                if matches!(*self.focus.borrow(), Some(Focus::Text(_))) {
+                    self.selection_bar.hide();
+                    self.focus.take();
+                }
                 self.learn_pace(&location);
                 self.update_status(&location);
                 self.record(&location);
                 self.last_location.replace(Some(location));
             }
             Event::ExternalLink { href } => self.open_link(&href),
-            Event::Selection { .. } => {}
             Event::PageCrashed { gave_up: false } => self.show_toast("The page crashed and was reloaded", true),
             Event::PageCrashed { gave_up: true } => {
                 self.show_toast("This book keeps crashing the page, so it was closed", true);
@@ -514,6 +586,9 @@ impl Window {
             _ => {}
         }
         parts.push(format!("{percent}%"));
+        if !l.bookmarks.is_empty() {
+            parts.insert(0, "bookmarked".into());
+        }
         self.status.position.set_label(&parts.join("  ·  "));
     }
 
@@ -620,7 +695,324 @@ impl Window {
                     None => self.show_toast(&format!("There is no chapter {n}"), true),
                 }
             }
+            Ok(Command::Export(format)) => self.export(format),
             Err(e) => self.show_toast(&e, true),
+        }
+    }
+
+    fn page_size(&self) -> (i32, i32) {
+        (self.reader.view.width(), self.reader.view.height())
+    }
+
+    /// Every panel and bar over the book, closed.
+    fn close_overlays(&self) {
+        self.selection_bar.hide();
+        self.note_editor.close();
+        self.annotations_panel.close();
+        self.focus.take();
+        self.note_target.take();
+    }
+
+    fn push_annotations(&self) {
+        let list = self.annotations.borrow();
+        let highlights: Vec<serde_json::Value> = list
+            .iter()
+            .filter(|a| a.kind == Kind::Highlight)
+            .map(|a| serde_json::json!({ "cfi": a.cfi, "color": a.color }))
+            .collect();
+        let bookmarks: Vec<&str> = list.iter().filter(|a| a.kind == Kind::Bookmark).map(|a| a.cfi.as_str()).collect();
+        self.reader.call("setHighlights", &serde_json::to_string(&highlights).unwrap_or_default());
+        self.reader.call("setBookmarks", &serde_json::to_string(&bookmarks).unwrap_or_default());
+    }
+
+    fn identity(&self) -> Option<String> {
+        self.current.borrow().as_ref().map(|c| c.book.identity.clone())
+    }
+
+    /// Store an annotation and keep the in-memory list in step.
+    fn store(&self, mut a: Annotation) -> Option<Annotation> {
+        let identity = self.identity()?;
+        if let Some(db) = &self.db {
+            match db.save_annotation(&identity, &a) {
+                Ok(id) => a.id = id,
+                Err(e) => {
+                    self.show_toast(&format!("Could not save: {e}"), true);
+                    return None;
+                }
+            }
+        }
+        let mut list = self.annotations.borrow_mut();
+        match list.iter_mut().find(|x| x.kind == a.kind && x.cfi == a.cfi) {
+            Some(x) => *x = a.clone(),
+            None => list.push(a.clone()),
+        }
+        list.sort_by(|x, y| x.fraction.total_cmp(&y.fraction).then(x.created_at.cmp(&y.created_at)));
+        drop(list);
+        self.refresh_panel();
+        Some(a)
+    }
+
+    fn remove(&self, id: i64) -> Option<Annotation> {
+        let identity = self.identity()?;
+        let removed = {
+            let mut list = self.annotations.borrow_mut();
+            let i = list.iter().position(|a| a.id == id)?;
+            list.remove(i)
+        };
+        if let Some(db) = &self.db {
+            let _ = db.delete_annotation(&identity, id);
+        }
+        match removed.kind {
+            Kind::Highlight => self.reader.call("removeHighlight", &serde_json::to_string(&removed.cfi).unwrap_or_default()),
+            Kind::Bookmark => self.push_annotations(),
+        }
+        self.refresh_panel();
+        Some(removed)
+    }
+
+    fn refresh_panel(&self) {
+        if self.annotations_panel.is_open() {
+            self.annotations_panel.set(&self.annotations.borrow());
+        }
+    }
+
+    fn place_annotations(&self, items: Vec<crate::reader::Located>) {
+        let updated: Vec<Annotation> = {
+            let mut list = self.annotations.borrow_mut();
+            items
+                .into_iter()
+                .filter_map(|item| {
+                    let a = list.iter_mut().find(|a| a.cfi == item.cfi)?;
+                    a.chapter = item.chapter;
+                    a.fraction = item.fraction;
+                    Some(a.clone())
+                })
+                .collect()
+        };
+        for a in updated {
+            self.store(a);
+        }
+    }
+
+    fn show_selection(&self, selection: Selection) {
+        if selection.text.trim().is_empty() {
+            return;
+        }
+        self.selection_bar.show(
+            &selection.text,
+            "h highlight   1–5 color   a note   y copy   esc",
+            selection.rect,
+            self.page_size(),
+        );
+        self.focus.replace(Some(Focus::Text(selection)));
+    }
+
+    fn highlight_from(&self, s: &Selection, color: &str, note: &str) -> Option<Annotation> {
+        let now = library::now();
+        let a = self.store(Annotation {
+            id: 0,
+            kind: Kind::Highlight,
+            cfi: s.cfi.clone(),
+            color: color.to_string(),
+            text: s.text.trim().to_string(),
+            note: note.to_string(),
+            chapter: s.chapter.clone(),
+            fraction: s.fraction,
+            created_at: now,
+            updated_at: now,
+        })?;
+        self.reader.call("addHighlight", &serde_json::json!({ "cfi": a.cfi, "color": a.color }).to_string());
+        Some(a)
+    }
+
+    /// h / 1–5 on a selection or a highlight.
+    fn color(&self, color: Option<usize>) {
+        let color = match color {
+            Some(i) => annotations::COLORS[i.min(4)].to_string(),
+            None => self.last_color.borrow().clone(),
+        };
+        self.last_color.replace(color.clone());
+        let focus = self.focus.take();
+        self.selection_bar.hide();
+        match focus {
+            Some(Focus::Text(s)) => {
+                self.highlight_from(&s, &color, "");
+            }
+            Some(Focus::Highlight(id)) => {
+                let found = self.annotations.borrow().iter().find(|a| a.id == id).cloned();
+                if let Some(mut a) = found {
+                    a.color = color;
+                    a.updated_at = library::now();
+                    if let Some(a) = self.store(a) {
+                        self.reader.call("addHighlight", &serde_json::json!({ "cfi": a.cfi, "color": a.color }).to_string());
+                    }
+                }
+            }
+            None => {}
+        }
+    }
+
+    fn open_note(&self, target: Focus) {
+        let (quote, note) = match &target {
+            Focus::Text(s) => (s.text.clone(), String::new()),
+            Focus::Highlight(id) => match self.annotations.borrow().iter().find(|a| a.id == *id) {
+                Some(a) => (a.text.clone(), a.note.clone()),
+                None => return,
+            },
+        };
+        self.selection_bar.hide();
+        self.focus.take();
+        self.note_target.replace(Some(target));
+        self.note_editor.open(&quote, &note);
+    }
+
+    fn save_note(&self) {
+        let note = self.note_editor.text().trim().to_string();
+        self.note_editor.close();
+        match self.note_target.take() {
+            Some(Focus::Text(s)) => {
+                let color = self.last_color.borrow().clone();
+                self.highlight_from(&s, &color, &note);
+            }
+            Some(Focus::Highlight(id)) => {
+                let found = self.annotations.borrow().iter().find(|a| a.id == id).cloned();
+                if let Some(mut a) = found {
+                    a.note = note;
+                    a.updated_at = library::now();
+                    self.store(a);
+                }
+            }
+            None => {}
+        }
+        self.focus_after_overlay();
+    }
+
+    fn cancel_note(&self) {
+        self.note_editor.close();
+        self.note_target.take();
+        self.focus_after_overlay();
+    }
+
+    fn focus_after_overlay(&self) {
+        if self.annotations_panel.is_open() {
+            self.annotations_panel.move_cursor(0);
+        } else {
+            self.reader.view.grab_focus();
+        }
+    }
+
+    fn copy_focus(&self) {
+        let text = match self.focus.borrow().as_ref() {
+            Some(Focus::Text(s)) => s.text.clone(),
+            Some(Focus::Highlight(id)) => self.annotations.borrow().iter().find(|a| a.id == *id).map(|a| a.text.clone()).unwrap_or_default(),
+            None => return,
+        };
+        self.window.clipboard().set_text(text.trim());
+        self.show_toast("Copied", false);
+        self.close_selection();
+    }
+
+    fn close_selection(&self) {
+        self.selection_bar.hide();
+        self.focus.take();
+        self.reader.call("clearSelection", "");
+        self.reader.view.grab_focus();
+    }
+
+    fn toggle_bookmark(&self) {
+        let location = self.last_location.borrow().clone();
+        let Some(location) = location else { return };
+        let here: Vec<i64> = self
+            .annotations
+            .borrow()
+            .iter()
+            .filter(|a| a.kind == Kind::Bookmark && location.bookmarks.contains(&a.cfi))
+            .map(|a| a.id)
+            .collect();
+        if here.is_empty() {
+            let Some(cfi) = location.page_start.clone() else { return };
+            let now = library::now();
+            self.store(Annotation {
+                id: 0,
+                kind: Kind::Bookmark,
+                cfi: cfi.clone(),
+                color: String::new(),
+                text: String::new(),
+                note: String::new(),
+                chapter: location.toc_label.clone().unwrap_or_default(),
+                fraction: location.fraction,
+                created_at: now,
+                updated_at: now,
+            });
+            self.push_annotations();
+            let mut shown = location;
+            shown.bookmarks = vec![cfi];
+            self.update_status(&shown);
+            self.last_location.replace(Some(shown));
+            self.show_toast("Bookmarked", false);
+        } else {
+            for id in here {
+                self.remove(id);
+            }
+            let mut shown = location;
+            shown.bookmarks.clear();
+            self.update_status(&shown);
+            self.last_location.replace(Some(shown));
+            self.show_toast("Bookmark removed", false);
+        }
+    }
+
+    fn export(&self, format: ExportFormat) {
+        let Some(book) = self.current.borrow().as_ref().map(|c| c.book.clone()) else { return };
+        let list = self.annotations.borrow().clone();
+        if !list.iter().any(|a| a.kind == Kind::Highlight) && format == ExportFormat::Markdown {
+            self.show_toast("Nothing to export yet: no highlights in this book", true);
+            return;
+        }
+        let (text, ext) = match format {
+            ExportFormat::Markdown => (annotations::to_markdown(&book.title, &book.authors, &list), "md"),
+            ExportFormat::Json => (annotations::to_json(&book, &list), "json"),
+        };
+        let dir = annotations::export_dir();
+        let path = dir.join(annotations::file_name(&book.title, ext));
+        match std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, text)) {
+            Ok(()) => self.show_toast(&format!("Exported to {}", path.display()), false),
+            Err(e) => self.show_toast(&format!("Could not export: {e}"), true),
+        }
+    }
+
+    /// Once: bring Foliate's positions, highlights and bookmarks over.
+    fn import_foliate_once(&self) {
+        let Some(db) = &self.db else { return };
+        if db.setting(FOLIATE_IMPORTED).ok().flatten().is_some() {
+            return;
+        }
+        let dir = annotations::foliate_dir();
+        if !dir.is_dir() {
+            let _ = db.set_setting(FOLIATE_IMPORTED, "none");
+            return;
+        }
+        let books = library::load(db).unwrap_or_default();
+        if books.is_empty() {
+            return; // Wait for a scan, or nothing will match.
+        }
+        match annotations::import_foliate(db, &dir, &books, library::now()) {
+            Ok(r) => {
+                let _ = db.set_setting(FOLIATE_IMPORTED, &library::now().to_string());
+                if r.books > 0 {
+                    self.show_toast(
+                        &format!(
+                            "From Foliate: {} books, {} positions, {} highlights, {} bookmarks",
+                            r.books, r.positions, r.annotations, r.bookmarks
+                        ),
+                        false,
+                    );
+                    if let Ok(books) = library::load(db) {
+                        self.library.set_books(books);
+                    }
+                }
+            }
+            Err(e) => eprintln!("omaread: Foliate import failed: {e}"),
         }
     }
 
@@ -638,6 +1030,18 @@ impl Window {
 
     pub fn handle_key(&self, key: gtk::gdk::Key, mods: gtk::gdk::ModifierType) -> glib::Propagation {
         let context = self.context();
+
+        // Writing a note: Esc cancels, Ctrl+Enter or Ctrl+S saves.
+        if self.note_editor.is_open() {
+            let ctrl = mods.contains(gtk::gdk::ModifierType::CONTROL_MASK);
+            match key {
+                gtk::gdk::Key::Escape => self.cancel_note(),
+                gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter if ctrl => self.save_note(),
+                gtk::gdk::Key::s if ctrl => self.save_note(),
+                _ => return glib::Propagation::Proceed,
+            }
+            return glib::Propagation::Stop;
+        }
 
         // Typing a command: Esc cancels, Enter runs (the entry's own activate).
         if self.cmdline_has_focus() {
@@ -700,6 +1104,48 @@ impl Window {
                     _ => None,
                 }
             }),
+            (Context::Reader, Action::ToggleBookmark) => self.toggle_bookmark(),
+            (Context::Reader, Action::Highlights) => self.annotations_panel.open(Kind::Highlight, &self.annotations.borrow()),
+            (Context::Reader, Action::Bookmarks) => self.annotations_panel.open(Kind::Bookmark, &self.annotations.borrow()),
+            (Context::Selection, Action::Highlight) => self.color(None),
+            (Context::Selection, Action::Color(i)) => self.color(Some(i)),
+            (Context::Selection, Action::Note) => {
+                if let Some(target) = self.focus.borrow().clone() {
+                    self.open_note(target);
+                }
+            }
+            (Context::Selection, Action::Copy) => self.copy_focus(),
+            (Context::Selection, Action::Delete) => {
+                if let Some(Focus::Highlight(id)) = self.focus.borrow().clone() {
+                    self.remove(id);
+                }
+                self.close_selection();
+            }
+            (Context::Selection, Action::Close) => self.close_selection(),
+            (Context::Annotations, Action::Move(_, dy)) => self.annotations_panel.move_cursor(dy),
+            (Context::Annotations, Action::Last) => self.annotations_panel.move_cursor(i32::MAX / 2),
+            (Context::Annotations, Action::First) => self.annotations_panel.move_cursor(i32::MIN / 2),
+            (Context::Annotations, Action::Open) => {
+                if let Some(a) = self.annotations_panel.selected() {
+                    self.annotations_panel.close();
+                    self.reader.call("goTo", &serde_json::to_string(&a.cfi).unwrap_or_default());
+                    self.reader.view.grab_focus();
+                }
+            }
+            (Context::Annotations, Action::Note) => {
+                if let Some(a) = self.annotations_panel.selected().filter(|a| a.kind == Kind::Highlight) {
+                    self.open_note(Focus::Highlight(a.id));
+                }
+            }
+            (Context::Annotations, Action::Delete) => {
+                if let Some(a) = self.annotations_panel.selected() {
+                    self.remove(a.id);
+                }
+            }
+            (Context::Annotations, Action::Close) => {
+                self.annotations_panel.close();
+                self.reader.view.grab_focus();
+            }
             (Context::Settings, Action::Move(0, dy)) => self.settings.move_cursor(dy),
             (Context::Settings, Action::Move(dx, _)) => self.settings.adjust(dx.signum()),
             (Context::Settings, Action::Close) => {
@@ -770,8 +1216,15 @@ impl Window {
         if let Some(timer) = self.toast_timer.take() {
             timer.remove();
         }
-        let toast = self.toast.clone();
-        let timer = glib::timeout_add_local_once(Duration::from_secs(4), move || toast.set_visible(false));
+        // A fired one-shot source is gone: the timer clears its own slot, so
+        // the next toast never removes a source that no longer exists.
+        let win = self.me.borrow().clone();
+        let timer = glib::timeout_add_local_once(Duration::from_secs(4), move || {
+            if let Some(win) = win.upgrade() {
+                win.toast_timer.take();
+                win.toast.set_visible(false);
+            }
+        });
         self.toast_timer.replace(Some(timer));
     }
 }
