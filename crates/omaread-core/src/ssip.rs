@@ -86,12 +86,28 @@ pub struct Client {
 
 const REPLY_TIMEOUT: Duration = Duration::from_secs(5);
 
-fn socket_path() -> PathBuf {
+/// speech-dispatcher's socket in this user's runtime directory. Never a
+/// shared location like /tmp: another user could put a socket there and
+/// receive what's read aloud.
+fn socket_path() -> Result<PathBuf, String> {
     if let Some(addr) = std::env::var("SPEECHD_ADDRESS").ok().and_then(|a| a.strip_prefix("unix_socket:").map(String::from)) {
-        return PathBuf::from(addr);
+        return Ok(PathBuf::from(addr));
     }
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/tmp"));
-    runtime.join("speech-dispatcher/speechd.sock")
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .ok_or("XDG_RUNTIME_DIR isn't set, so there's no private place to find speech-dispatcher")?;
+    Ok(runtime.join("speech-dispatcher/speechd.sock"))
+}
+
+/// The socket must be ours: owned by the user whose runtime directory it's in.
+fn owned_by_us(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let (Ok(socket), Some(runtime)) = (std::fs::metadata(path), std::env::var_os("XDG_RUNTIME_DIR")) else {
+        // SPEECHD_ADDRESS without a runtime dir: the user chose it explicitly.
+        return std::env::var_os("SPEECHD_ADDRESS").is_some();
+    };
+    std::fs::metadata(runtime).is_ok_and(|dir| dir.uid() == socket.uid())
 }
 
 impl Client {
@@ -99,7 +115,7 @@ impl Client {
     /// this connection (`user:omaread:<component>`). `on_event` runs on the
     /// reader thread.
     pub fn connect(component: &str, on_event: impl Fn(Event) + Send + 'static) -> Result<Client, String> {
-        let path = socket_path();
+        let path = socket_path()?;
         let stream = match UnixStream::connect(&path) {
             Ok(s) => s,
             Err(_) => {
@@ -111,6 +127,9 @@ impl Client {
                 UnixStream::connect(&path).map_err(|e| format!("speech-dispatcher isn't answering at {}: {e}", path.display()))?
             }
         };
+        if !owned_by_us(&path) {
+            return Err(format!("{} isn't owned by you; not sending it anything", path.display()));
+        }
         let reader = stream.try_clone().map_err(|e| e.to_string())?;
         let (tx, replies) = mpsc::channel();
         std::thread::Builder::new()
