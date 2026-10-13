@@ -18,6 +18,8 @@ let highlights = new Map()
 let bookmarks = []
 // The live selection: where it is, so it can be highlighted.
 let selection = null
+// Bumped to cancel a running search.
+let searchToken = 0
 let pendingOpen = {}
 
 // Mirrors ReaderPrefs in Rust; replaced wholesale by setPrefs.
@@ -319,6 +321,38 @@ globalThis.omaread = {
     clearSelection() {
         selection?.range?.startContainer?.ownerDocument?.getSelection()?.removeAllRanges()
         selection = null
+    },
+    // Search the whole book, streaming results by chapter. A new search (or
+    // clearSearch) cancels the one running.
+    search({ query, matchCase = false, matchWholeWords = false, matchDiacritics = false }) {
+        const token = ++searchToken
+        view?.clearSearch()
+        if (!view || !query?.trim()) return
+        ;(async () => {
+            let count = 0, lastProgress = 0
+            const opts = { query, matchCase, matchWholeWords, matchDiacritics, drawOptions: { color: palette?.link } }
+            for await (const r of view.search(opts)) {
+                if (token !== searchToken) return
+                if (r === 'done') break
+                if (r.progress != null) {
+                    if (r.progress - lastProgress >= 0.05) {
+                        lastProgress = r.progress
+                        emit({ type: 'search-progress', progress: r.progress })
+                    }
+                    continue
+                }
+                const items = (r.subitems ?? []).map(({ cfi, excerpt }) => ({
+                    cfi, pre: excerpt?.pre ?? '', hit: excerpt?.match ?? '', post: excerpt?.post ?? '',
+                }))
+                count += items.length
+                if (items.length) emit({ type: 'search-results', chapter: r.label?.trim() ?? '', items })
+            }
+            if (token === searchToken) emit({ type: 'search-done', count })
+        })().catch(e => emit({ type: 'search-done', count: 0, error: String(e?.message ?? e) }))
+    },
+    clearSearch() {
+        searchToken++
+        view?.clearSearch()
     },
     // For tests: select the n-th paragraph on the page in view, as a mouse would.
     testSelect(n = 0, words = 6) {

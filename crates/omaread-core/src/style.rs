@@ -171,18 +171,26 @@ list.annotation-list .swatch-underline, list.annotation-list .swatch-squiggly,
 list.annotation-list .swatch-strikethrough {{ border-left-color: {muted}; }}
 .annotations-panel {{ min-width: {panel_wide}px; }}
 
-entry.cmdline {{
-  margin: 0;
-  padding: {xs}px {row_x}px;
+entry.panel-entry {{
+  padding: {xs}px {md}px;
   min-height: 0;
-  background-color: {bg};
+  background-color: {normal_fill};
   color: {fg};
-  border: none;
-  border-top: {hairline}px solid {accent};
+  border: {hairline}px solid {accent};
   box-shadow: none;
   outline: none;
   font-size: {body_small}px;
 }}
+.palette {{ margin-bottom: {panel}px; }}
+list.palette-list {{ background: none; font-size: {body_small}px; }}
+list.palette-list > row {{ padding: {xs}px {sm}px; border: {nbw}px solid transparent; }}
+list.palette-list > row:selected {{ background-color: {selected_fill}; color: {accent_text}; }}
+list.palette-list .key, .search-panel .key {{ color: {muted}; font-size: {caption}px; }}
+list.search-list {{ background: none; font-size: {body_small}px; }}
+list.search-list > row {{ padding: {xs}px {sm}px; border: {nbw}px solid transparent; }}
+list.search-list > row.header {{ padding-top: {md}px; }}
+list.search-list > row:selected {{ background-color: {selected_fill}; }}
+list.search-list > row:selected b {{ color: {accent_text}; }}
 
 /* Library */
 .library-rail-scroller {{

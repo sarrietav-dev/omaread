@@ -16,6 +16,11 @@ pub enum Action {
     ToggleStatus,
     Toc,
     CommandLine,
+    Search,
+    NextHit,
+    PrevHit,
+    /// Esc while reading: clear the search if there is one, else close.
+    ClearOrClose,
     Settings,
     Bigger,
     Smaller,
@@ -54,6 +59,8 @@ pub enum Context {
     Selection,
     /// The highlights or bookmarks panel is open.
     Annotations,
+    /// The search results have the keys.
+    Search,
 }
 
 #[derive(Default)]
@@ -107,6 +114,7 @@ impl Keymap {
             Context::Settings => settings(key, ch),
             Context::Selection => selection(key, ch),
             Context::Annotations => annotations(key, ch),
+            Context::Search => search(key, ch),
         }
     }
 }
@@ -118,7 +126,7 @@ fn reader(key: Key, ch: Option<char>, shift: bool) -> Option<Action> {
         Key::Left | Key::Up | Key::Page_Up => return Some(Action::PrevPage),
         Key::Home => return Some(Action::First),
         Key::End => return Some(Action::Last),
-        Key::Escape => return Some(Action::Close),
+        Key::Escape => return Some(Action::ClearOrClose),
         _ => {}
     }
     match ch? {
@@ -130,6 +138,9 @@ fn reader(key: Key, ch: Option<char>, shift: bool) -> Option<Action> {
         'i' => Some(Action::ToggleStatus),
         't' => Some(Action::Toc),
         ':' => Some(Action::CommandLine),
+        '/' => Some(Action::Search),
+        'n' => Some(Action::NextHit),
+        'N' => Some(Action::PrevHit),
         ',' => Some(Action::Settings),
         '+' | '=' => Some(Action::Bigger),
         '-' => Some(Action::Smaller),
@@ -137,6 +148,25 @@ fn reader(key: Key, ch: Option<char>, shift: bool) -> Option<Action> {
         'm' => Some(Action::ToggleBookmark),
         'A' => Some(Action::Highlights),
         '\'' => Some(Action::Bookmarks),
+        'q' => Some(Action::Close),
+        _ => None,
+    }
+}
+
+fn search(key: Key, ch: Option<char>) -> Option<Action> {
+    match key {
+        Key::Up => return Some(Action::Move(0, -1)),
+        Key::Down => return Some(Action::Move(0, 1)),
+        Key::Return | Key::KP_Enter => return Some(Action::Open),
+        Key::Escape => return Some(Action::Close),
+        _ => {}
+    }
+    match ch? {
+        'j' => Some(Action::Move(0, 1)),
+        'k' => Some(Action::Move(0, -1)),
+        'n' => Some(Action::NextHit),
+        'N' => Some(Action::PrevHit),
+        '/' => Some(Action::Search),
         'q' => Some(Action::Close),
         _ => None,
     }
@@ -240,6 +270,7 @@ fn library(key: Key, ch: Option<char>, shift: bool) -> Option<Action> {
         'j' => Some(Action::Move(0, 1)),
         'G' => Some(Action::Last),
         '/' => Some(Action::Filter),
+        ':' => Some(Action::CommandLine),
         'o' => Some(Action::Sort),
         'q' => Some(Action::Close),
         _ => None,

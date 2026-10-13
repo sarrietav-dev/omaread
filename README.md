@@ -39,6 +39,7 @@ Library
 | Tab / Shift-Tab | next / previous shelf |
 | `gg` / `G` | first / last book |
 | `gr` | rescan |
+| `:` | command palette |
 | `q` | quit |
 
 Reading
@@ -51,7 +52,9 @@ Reading
 | `gg` / `G` | start / end of the book |
 | `Ctrl-o` / `Ctrl-i` | back / forward |
 | `t` | table of contents (`j`/`k` move, `h`/`l` fold, Enter go) |
-| `:` | command line: `:42%`, `:p 120`, `:ch 7` |
+| `/` | search the book (Alt+c case, Alt+w whole words, Alt+d accents) |
+| `n` / `N` | next / previous match (Esc clears) |
+| `:` | command palette: every command, fuzzy; also `:42%`, `:p 120`, `:ch 7`, `:export` |
 | select text | `h` highlight, `1`–`5` color, `a` note, `y` copy |
 | click a highlight | `a` note, `1`–`5` recolor, `x` delete |
 | `m` | bookmark this page (again to remove) |

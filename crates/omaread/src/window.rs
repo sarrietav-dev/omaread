@@ -20,6 +20,8 @@ use crate::annotations_view::{AnnotationsPanel, NoteEditor, SelectionBar};
 use crate::keys::{Action, Context, Keymap};
 use crate::library_view::LibraryView;
 use crate::reader::{Event, Location, Reader, Selection};
+use crate::palette::{Palette, Run};
+use crate::search_view::{Hit, SearchView};
 use crate::service::Service;
 use crate::settings_view::{Scope, SettingsView};
 use crate::toc_view::{TocItem, TocView};
@@ -47,7 +49,8 @@ pub struct Window {
     status: Status,
     toc: Rc<TocView>,
     toc_items: RefCell<Vec<TocItem>>,
-    cmdline: gtk::Entry,
+    palette: Rc<Palette>,
+    search: Rc<SearchView>,
     settings: Rc<SettingsView>,
     selection_bar: SelectionBar,
     note_editor: NoteEditor,
@@ -161,11 +164,8 @@ impl Window {
                 }
             }
         });
-        let cmdline = gtk::Entry::builder()
-            .valign(gtk::Align::End)
-            .visible(false)
-            .css_classes(["cmdline"])
-            .build();
+        let palette = Palette::new();
+        let search = SearchView::new();
         let settings = SettingsView::new({
             let with_window = with_window.clone();
             move |scope, prefs| {
@@ -178,7 +178,7 @@ impl Window {
         reader_overlay.set_child(Some(&reader.view));
         reader_overlay.add_overlay(&status.bar);
         reader_overlay.add_overlay(&toc.root);
-        reader_overlay.add_overlay(&cmdline);
+        reader_overlay.add_overlay(&search.root);
         reader_overlay.add_overlay(&settings.root);
         let selection_bar = SelectionBar::new();
         let note_editor = NoteEditor::new();
@@ -204,6 +204,7 @@ impl Window {
             .build();
         let overlay = gtk::Overlay::new();
         overlay.set_child(Some(&stack));
+        overlay.add_overlay(&palette.root);
         overlay.add_overlay(&toast);
         window.set_content(Some(&overlay));
 
@@ -220,7 +221,8 @@ impl Window {
             status,
             toc,
             toc_items: RefCell::default(),
-            cmdline,
+            palette,
+            search,
             settings,
             prefs: RefCell::new(
                 db.as_ref()
@@ -253,13 +255,19 @@ impl Window {
         if let Some(speed) = win.db.as_ref().and_then(|db| db.setting(SPEED_SETTING).ok().flatten()).and_then(|s| ReadingSpeed::from_setting(&s)) {
             win.speed.set(speed);
         }
-        win.cmdline.connect_activate({
+        win.palette.entry.connect_activate({
             let win = Rc::downgrade(&win);
-            move |entry| {
+            move |_| {
                 if let Some(win) = win.upgrade() {
-                    let text = entry.text().to_string();
-                    win.close_cmdline();
-                    win.run_command(&text);
+                    win.run_palette();
+                }
+            }
+        });
+        win.search.entry.connect_activate({
+            let win = Rc::downgrade(&win);
+            move |_| {
+                if let Some(win) = win.upgrade() {
+                    win.start_search();
                 }
             }
         });
@@ -385,7 +393,9 @@ impl Window {
         self.save_progress();
         self.save_speed();
         self.toc.close();
-        self.close_cmdline();
+        self.palette.close();
+        self.search.close();
+        self.search.clear();
         if let Some(current) = self.current.take() {
             let mut book = current.book;
             book.progress = Some(current.progress);
@@ -407,6 +417,8 @@ impl Window {
             Context::Library
         } else if self.toc.is_open() {
             Context::Toc
+        } else if self.search.is_open() {
+            Context::Search
         } else if self.settings.is_open() {
             Context::Settings
         } else if self.annotations_panel.is_open() {
@@ -462,6 +474,11 @@ impl Window {
                 }
             }
             Event::Located { items } => self.place_annotations(items),
+            Event::SearchResults { chapter, items } => self.search.add(&chapter, items),
+            Event::SearchProgress { progress } => self.search.progress(progress),
+            Event::SearchDone { error, .. } => {
+                self.search.done(error.as_deref());
+            }
             Event::Notice { message } => self.show_toast(&message, false),
             Event::BookError { message, stack } => {
                 eprintln!("omaread: could not open book: {message}\n{stack}");
@@ -660,24 +677,66 @@ impl Window {
         self.toc.open(href.as_deref());
     }
 
-    fn open_cmdline(&self) {
-        self.cmdline.set_text(":");
-        self.cmdline.set_visible(true);
-        self.cmdline.grab_focus();
-        self.cmdline.set_position(-1);
-    }
-
-    fn close_cmdline(&self) {
-        if WidgetExt::is_visible(&self.cmdline) {
-            self.cmdline.set_visible(false);
-            self.reader.view.grab_focus();
+    fn close_palette(&self) {
+        let from = self.palette.context();
+        self.palette.close();
+        match from {
+            Some(Context::Library) => self.library.focus(),
+            _ => {
+                self.reader.view.grab_focus();
+            }
         }
     }
 
-    fn cmdline_has_focus(&self) -> bool {
-        WidgetExt::is_visible(&self.cmdline)
-            && gtk::prelude::GtkWindowExt::focus(&self.window)
-                .is_some_and(|f| f == self.cmdline.clone().upcast::<gtk::Widget>() || f.is_ancestor(&self.cmdline))
+    /// Enter in the palette: a command with an argument, or the chosen entry.
+    fn run_palette(&self) {
+        let text = self.palette.text();
+        let context = self.palette.context().unwrap_or(Context::Reader);
+        let typed = text.trim();
+        let entry = self.palette.selected();
+        self.close_palette();
+        if context != Context::Library && !typed.is_empty() && command::parse(typed).is_ok() {
+            self.run_command(typed);
+            return;
+        }
+        match entry.map(|e| e.run) {
+            Some(Run::Action(action)) => self.run(if context == Context::Library { Context::Library } else { Context::Reader }, action),
+            Some(Run::Line("")) => self.show_toast("Type where to go: 42%, p 120, ch 7", false),
+            Some(Run::Line(line)) => self.run_command(line),
+            None if !typed.is_empty() => self.run_command(typed),
+            None => {}
+        }
+    }
+
+    fn open_search(&self) {
+        self.toc.close();
+        self.annotations_panel.close();
+        self.search.open();
+    }
+
+    fn start_search(&self) {
+        let query = self.search.query();
+        if query.is_empty() {
+            self.search.clear();
+            self.reader.call("clearSearch", "");
+            return;
+        }
+        let o = self.search.options();
+        self.search.begin();
+        let args = serde_json::json!({
+            "query": query,
+            "matchCase": o.match_case,
+            "matchWholeWords": o.whole_words,
+            "matchDiacritics": o.diacritics,
+        });
+        self.reader.call("search", &args.to_string());
+    }
+
+    fn go_to_hit(&self, hit: Option<Hit>) {
+        match hit {
+            Some(hit) => self.reader.call("goTo", &serde_json::to_string(&hit.cfi).unwrap_or_default()),
+            None => self.show_toast("No search results; / to search", false),
+        }
     }
 
     fn run_command(&self, text: &str) {
@@ -1043,13 +1102,39 @@ impl Window {
             return glib::Propagation::Stop;
         }
 
-        // Typing a command: Esc cancels, Enter runs (the entry's own activate).
-        if self.cmdline_has_focus() {
-            if key == gtk::gdk::Key::Escape {
-                self.close_cmdline();
-                return glib::Propagation::Stop;
+        // The palette: Esc closes, arrows (and ctrl+n/p) choose, Enter runs.
+        if self.palette.has_focus() {
+            let ctrl = mods.contains(gtk::gdk::ModifierType::CONTROL_MASK);
+            match key {
+                gtk::gdk::Key::Escape => self.close_palette(),
+                gtk::gdk::Key::Down => self.palette.move_cursor(1),
+                gtk::gdk::Key::Up => self.palette.move_cursor(-1),
+                gtk::gdk::Key::n if ctrl => self.palette.move_cursor(1),
+                gtk::gdk::Key::p if ctrl => self.palette.move_cursor(-1),
+                _ => return glib::Propagation::Proceed,
             }
-            return glib::Propagation::Proceed;
+            return glib::Propagation::Stop;
+        }
+
+        // Typing a search: Esc closes, Enter searches, Alt toggles options.
+        if self.search.is_open() && self.search.entry_has_focus() {
+            let alt = mods.contains(gtk::gdk::ModifierType::ALT_MASK);
+            match key {
+                gtk::gdk::Key::Escape => {
+                    self.search.close();
+                    self.reader.view.grab_focus();
+                }
+                gtk::gdk::Key::Down | gtk::gdk::Key::Tab => self.search.focus_results(),
+                _ if alt => match key.to_unicode() {
+                    Some(c @ ('c' | 'w' | 'd')) => {
+                        self.search.toggle(c);
+                        self.start_search();
+                    }
+                    _ => return glib::Propagation::Proceed,
+                },
+                _ => return glib::Propagation::Proceed,
+            }
+            return glib::Propagation::Stop;
         }
 
         // Typing in the filter: only Esc and Enter are ours.
@@ -1087,7 +1172,22 @@ impl Window {
                 call("next")
             }
             (Context::Reader, Action::Toc) => self.open_toc(),
-            (Context::Reader, Action::CommandLine) => self.open_cmdline(),
+            (Context::Reader | Context::Library, Action::CommandLine) => self.palette.open(context),
+            (Context::Reader, Action::Search) => self.open_search(),
+            (Context::Reader | Context::Search, Action::NextHit) => self.go_to_hit(self.search.step(1)),
+            (Context::Reader | Context::Search, Action::PrevHit) => self.go_to_hit(self.search.step(-1)),
+            (Context::Search, Action::Move(_, dy)) => self.search.move_cursor(dy),
+            (Context::Search, Action::Open) => {
+                let hit = self.search.selected();
+                self.search.close();
+                self.reader.view.grab_focus();
+                self.go_to_hit(hit);
+            }
+            (Context::Search, Action::Search) => self.search.open(),
+            (Context::Search, Action::Close) => {
+                self.search.close();
+                self.reader.view.grab_focus();
+            }
             (Context::Toc, Action::Move(0, dy)) => self.toc.move_cursor(dy),
             (Context::Toc, Action::Move(dx, _)) => self.toc.fold(dx > 0),
             (Context::Toc, Action::First) => self.toc.move_cursor(i32::MIN / 2),
@@ -1167,6 +1267,11 @@ impl Window {
                 let bar = &self.status.bar;
                 bar.set_visible(!bar.is_visible());
             }
+            (Context::Reader, Action::ClearOrClose) if self.search.has_hits() => {
+                self.search.clear();
+                self.reader.call("clearSearch", "");
+            }
+            (Context::Reader, Action::ClearOrClose) => self.run(context, Action::Close),
             (Context::Reader, Action::Close) => {
                 if self.toast.is_visible() {
                     self.toast.set_visible(false);

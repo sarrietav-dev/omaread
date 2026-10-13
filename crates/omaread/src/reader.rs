@@ -50,6 +50,19 @@ pub enum Event {
         cfi: String,
         rect: Option<Rect>,
     },
+    SearchResults {
+        chapter: String,
+        items: Vec<crate::search_view::Hit>,
+    },
+    SearchProgress {
+        progress: f64,
+    },
+    #[allow(dead_code)]
+    SearchDone {
+        #[serde(default)]
+        count: usize,
+        error: Option<String>,
+    },
     /// Chapter and position for CFIs, answering `locate`.
     Located {
         items: Vec<Located>,

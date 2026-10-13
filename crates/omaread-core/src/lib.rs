@@ -8,6 +8,7 @@ pub mod command;
 pub mod config;
 pub mod db;
 pub mod epub;
+pub mod fuzzy;
 pub mod library;
 pub mod prefs;
 pub mod speed;
