@@ -52,8 +52,19 @@ Reading
 | `Ctrl-o` / `Ctrl-i` | back / forward |
 | `t` | table of contents (`j`/`k` move, `h`/`l` fold, Enter go) |
 | `:` | command line: `:42%`, `:p 120`, `:ch 7` |
+| `,` | reading settings (`j`/`k` move, `h`/`l` change) |
+| `+` / `-` | bigger / smaller text |
+| `T` | cycle theme: Omarchy, light, dark, sepia |
 | `i` | toggle the status line |
 | `q` / Esc | back to the library |
+
+Reading settings (theme, font, size, line height, justification,
+hyphenation, margins, width, columns, pages or scroll, how much of the
+publisher's styling to keep) apply to all books, or to one book when you
+switch "Applies to" to "this book". Any installed Omarchy theme can be a
+book's theme.
+
+For hyphenation, install the dictionaries: `sudo pacman -S hyphen-en hyphen-es`.
 
 Your place in every book is saved as you read. The status line shows the
 chapter, time left in the chapter and the book (learned from your own reading

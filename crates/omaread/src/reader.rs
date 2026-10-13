@@ -268,6 +268,15 @@ impl Reader {
         });
     }
 
+    #[cfg(debug_assertions)]
+    pub fn debug_eval(&self, expr: &str) {
+        let script = format!("JSON.stringify({expr})");
+        self.view.evaluate_javascript(&script, None, None, None::<&gtk::gio::Cancellable>, |result| match result {
+            Ok(value) => println!("debug-js: {}", value.to_str()),
+            Err(e) => println!("debug-js error: {e}"),
+        });
+    }
+
     fn page_ready(&self) {
         let queued = {
             let mut state = self.state.borrow_mut();

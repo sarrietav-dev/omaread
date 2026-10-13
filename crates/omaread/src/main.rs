@@ -3,6 +3,7 @@ mod keys;
 mod library_view;
 mod reader;
 mod service;
+mod settings_view;
 mod theming;
 mod toc_view;
 mod window;
@@ -21,8 +22,13 @@ fn main() -> glib::ExitCode {
         return scan();
     }
 
+    // Debug builds can run beside the real app under another id (for tests).
+    let app_id = match std::env::var("OMAREAD_APP_ID") {
+        Ok(id) if cfg!(debug_assertions) && gio::Application::id_is_valid(&id) => id,
+        _ => APP_ID.to_string(),
+    };
     let app = adw::Application::builder()
-        .application_id(APP_ID)
+        .application_id(app_id.as_str())
         .flags(gio::ApplicationFlags::HANDLES_OPEN)
         .build();
 
@@ -102,8 +108,9 @@ fn scan() -> glib::ExitCode {
 #[cfg(debug_assertions)]
 fn install_debug_actions(app: &adw::Application, win: &Rc<window::Window>) {
     let action = gio::SimpleAction::new("debug-key", Some(glib::VariantTy::STRING));
-    let win = Rc::downgrade(win);
+    let weak = Rc::downgrade(win);
     action.connect_activate(move |_, param| {
+        let win = weak.clone();
         let (Some(win), Some(spec)) = (win.upgrade(), param.and_then(|p| p.str().map(String::from))) else { return };
         if let Some(text) = spec.strip_prefix("type:") {
             if let Some(focus) = gtk::prelude::GtkWindowExt::focus(&win.window).and_downcast::<gtk::Text>() {
@@ -129,4 +136,35 @@ fn install_debug_actions(app: &adw::Application, win: &Rc<window::Window>) {
         }
     });
     app.add_action(&action);
+
+    // `debug-js "<expression>"`: evaluate in the page, print the JSON result.
+    let js = gio::SimpleAction::new("debug-js", Some(glib::VariantTy::STRING));
+    let js_win = win.clone();
+    let win = Rc::downgrade(win);
+    js.connect_activate(move |_, param| {
+        let (Some(win), Some(expr)) = (win.upgrade(), param.and_then(|p| p.str().map(String::from))) else { return };
+        win.debug_eval(&expr);
+    });
+    app.add_action(&js);
+
+    // `debug-snapshot "/path.png"`: render the window to a file, visible or not.
+    let snap = gio::SimpleAction::new("debug-snapshot", Some(glib::VariantTy::STRING));
+    let win = Rc::downgrade(&js_win);
+    snap.connect_activate(move |_, param| {
+        let (Some(win), Some(path)) = (win.upgrade(), param.and_then(|p| p.str().map(String::from))) else { return };
+        // The content, not the toplevel: a paintable of a window draws nothing.
+        let Some(widget) = win.window.content() else { return };
+        let (w, h) = (widget.width() as f64, widget.height() as f64);
+        let paintable = gtk::WidgetPaintable::new(Some(&widget));
+        let snapshot = gtk::Snapshot::new();
+        paintable.snapshot(&snapshot, w, h);
+        let Some(node) = snapshot.to_node() else { return eprintln!("debug-snapshot: nothing drawn ({w}x{h}, mapped: {})", widget.is_mapped()) };
+        let Some(renderer) = widget.native().and_then(|n| n.renderer()) else { return };
+        let texture = renderer.render_texture(&node, None);
+        match texture.save_to_png(&path) {
+            Ok(()) => println!("debug-snapshot: {path}"),
+            Err(e) => eprintln!("debug-snapshot: {e}"),
+        }
+    });
+    app.add_action(&snap);
 }

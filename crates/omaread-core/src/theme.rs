@@ -118,6 +118,11 @@ impl Sources {
         Some(fnv1a([&colors[..], &shell[..], &name[..]]))
     }
 
+    /// The desktop's shell.toml, for sizing a theme that isn't the desktop's.
+    pub fn shell_text(&self) -> String {
+        std::fs::read_to_string(&self.shell).unwrap_or_default()
+    }
+
     /// The live Omarchy theme, or `None` when this isn't an Omarchy desktop.
     pub fn load(&self) -> Option<Theme> {
         let colors = std::fs::read_to_string(&self.colors).ok()?;

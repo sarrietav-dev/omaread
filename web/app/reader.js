@@ -13,19 +13,21 @@ let view = null
 let palette = null
 let pendingOpen = {}
 
-const layout = {
-    flow: 'paginated',
-    gap: 0.06,
-    margin: 48,
-    maxInlineSize: 720,
-    maxColumnCount: 2,
-}
-
-const style = {
-    lineHeight: 1.5,
+// Mirrors ReaderPrefs in Rust; replaced wholesale by setPrefs.
+let prefs = {
+    font_family: null,
+    font_size: 18,
+    line_height: 1.5,
     justify: true,
     hyphenate: true,
+    margin: 48,
+    max_width: 720,
+    columns: 0,
+    flow: 'paginated',
+    publisher: 'keep',
 }
+
+const cssString = s => `"${String(s).replace(/["\\\n]/g, '')}"`
 
 const langOf = el => {
     for (; el; el = el.parentElement) {
@@ -35,13 +37,20 @@ const langOf = el => {
 }
 
 // Two sheets: the first goes before the book's own CSS (defaults it may
-// override), the second after it (the theme, which it may not).
+// override), the second after it (what it may not).
 const bookCSS = () => {
     const p = palette
+    const family = prefs.font_family ? `${cssString(prefs.font_family)}, serif` : null
+    const strong = prefs.publisher !== 'keep'
+    const all = prefs.publisher === 'all'
+    const imp = all ? ' !important' : ''
+    const notCode = ':not(pre, pre *, code, kbd, samp, tt, var)'
     return [`
     @namespace epub "http://www.idpf.org/2007/ops";
     html {
-        line-height: ${style.lineHeight};
+        font-size: ${prefs.font_size}px;
+        line-height: ${prefs.line_height};
+        ${family ? `font-family: ${family};` : ''}
         hanging-punctuation: allow-end last;
         orphans: 2;
         widows: 2;
@@ -54,7 +63,19 @@ const bookCSS = () => {
     h1, h2, h3, h4, h5, h6, hgroup, th { text-wrap: balance; }
     pre { white-space: pre-wrap !important; tab-size: 4; }
     aside[epub|type~="footnote"] { display: none; }
-`, p ? `
+`, `
+    ${strong ? `
+    html { font-size: ${prefs.font_size}px !important; }
+    body { font-size: 1rem !important; }
+    ${family ? `body, body *${notCode} { font-family: ${family} !important; }` : ''}
+    ` : ''}
+    p, li, blockquote, dd {
+        line-height: ${prefs.line_height}${imp};
+        text-align: ${prefs.justify ? 'justify' : 'start'}${imp};
+        hyphens: ${prefs.hyphenate ? 'auto' : 'manual'}${imp};
+        -webkit-hyphens: ${prefs.hyphenate ? 'auto' : 'manual'}${imp};
+    }
+    ${p ? `
     html {
         color-scheme: ${p.mode === 'dark' ? 'dark' : 'light'};
     }
@@ -77,12 +98,8 @@ const bookCSS = () => {
     }
     ::selection { background: ${p.selection}; }
     svg, img { background-color: transparent !important; }
-    p, li, blockquote, dd {
-        line-height: ${style.lineHeight};
-        text-align: ${style.justify ? 'justify' : 'start'};
-        hyphens: ${style.hyphenate ? 'auto' : 'none'};
-    }
-` : '']
+    ` : ''}
+`]
 }
 
 const applyPalette = () => {
@@ -97,11 +114,11 @@ const applyPalette = () => {
 const applyLayout = () => {
     const r = view?.renderer
     if (!r) return
-    r.setAttribute('flow', layout.flow)
-    r.setAttribute('gap', `${layout.gap * 100}%`)
-    r.setAttribute('margin', `${layout.margin}px`)
-    r.setAttribute('max-inline-size', `${layout.maxInlineSize}px`)
-    r.setAttribute('max-column-count', layout.maxColumnCount)
+    r.setAttribute('flow', prefs.flow === 'scrolled' ? 'scrolled' : 'paginated')
+    r.setAttribute('gap', '6%')
+    r.setAttribute('margin', `${prefs.margin}px`)
+    r.setAttribute('max-inline-size', `${prefs.max_width}px`)
+    r.setAttribute('max-column-count', prefs.columns || 2)
     r.setStyles?.(bookCSS())
 }
 
@@ -188,13 +205,9 @@ globalThis.omaread = {
         palette = p
         applyPalette()
     },
-    setLayout(l) {
-        Object.assign(layout, l)
+    setPrefs(p) {
+        prefs = { ...prefs, ...p }
         applyLayout()
-    },
-    setStyle(s) {
-        Object.assign(style, s)
-        view?.renderer?.setStyles?.(bookCSS())
     },
     next: () => view?.next(),
     prev: () => view?.prev(),

@@ -8,6 +8,8 @@ pub mod config;
 pub mod db;
 pub mod epub;
 pub mod library;
+pub mod prefs;
 pub mod speed;
 pub mod style;
 pub mod theme;
+pub mod themes;

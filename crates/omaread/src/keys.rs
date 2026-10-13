@@ -16,6 +16,10 @@ pub enum Action {
     ToggleStatus,
     Toc,
     CommandLine,
+    Settings,
+    Bigger,
+    Smaller,
+    CycleTheme,
     // Library and panels
     Move(i32, i32),
     Open,
@@ -35,6 +39,8 @@ pub enum Context {
     Reader,
     /// The table of contents is open over the book.
     Toc,
+    /// The reading settings are open over the book.
+    Settings,
 }
 
 #[derive(Default)]
@@ -47,7 +53,8 @@ impl Keymap {
     pub fn press(&mut self, context: Context, key: Key, mods: ModifierType) -> Option<Action> {
         let ctrl = mods.contains(ModifierType::CONTROL_MASK);
         let shift = mods.contains(ModifierType::SHIFT_MASK);
-        let ch = key.to_unicode();
+        // Shift+t is T, however the keyboard layer reports it.
+        let ch = key.to_unicode().map(|c| if shift && c.is_ascii_lowercase() { c.to_ascii_uppercase() } else { c });
 
         if std::mem::take(&mut self.pending_g) {
             return match (ch, context) {
@@ -75,6 +82,7 @@ impl Keymap {
             Context::Reader => reader(key, ch, shift),
             Context::Library => library(key, ch, shift),
             Context::Toc => toc(key, ch),
+            Context::Settings => settings(key, ch),
         }
     }
 }
@@ -98,7 +106,30 @@ fn reader(key: Key, ch: Option<char>, shift: bool) -> Option<Action> {
         'i' => Some(Action::ToggleStatus),
         't' => Some(Action::Toc),
         ':' => Some(Action::CommandLine),
+        ',' => Some(Action::Settings),
+        '+' | '=' => Some(Action::Bigger),
+        '-' => Some(Action::Smaller),
+        'T' => Some(Action::CycleTheme),
         'q' => Some(Action::Close),
+        _ => None,
+    }
+}
+
+fn settings(key: Key, ch: Option<char>) -> Option<Action> {
+    match key {
+        Key::Up => return Some(Action::Move(0, -1)),
+        Key::Down => return Some(Action::Move(0, 1)),
+        Key::Left => return Some(Action::Move(-1, 0)),
+        Key::Right | Key::Return | Key::KP_Enter => return Some(Action::Move(1, 0)),
+        Key::Escape => return Some(Action::Close),
+        _ => {}
+    }
+    match ch? {
+        'j' => Some(Action::Move(0, 1)),
+        'k' => Some(Action::Move(0, -1)),
+        'h' => Some(Action::Move(-1, 0)),
+        'l' => Some(Action::Move(1, 0)),
+        ',' | 'q' => Some(Action::Close),
         _ => None,
     }
 }

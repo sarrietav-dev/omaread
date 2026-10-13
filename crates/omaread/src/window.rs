@@ -11,6 +11,7 @@ use omaread_core::config::Config;
 use omaread_core::db::{Db, Progress};
 use omaread_core::command::{self, Command};
 use omaread_core::library::{self, Book, Paths};
+use omaread_core::prefs::ReaderPrefs;
 use omaread_core::speed::{ReadingSpeed, format_minutes};
 use omaread_core::theme::Theme;
 
@@ -18,6 +19,7 @@ use crate::keys::{Action, Context, Keymap};
 use crate::library_view::LibraryView;
 use crate::reader::{Event, Location, Reader};
 use crate::service::Service;
+use crate::settings_view::{Scope, SettingsView};
 use crate::toc_view::{TocItem, TocView};
 use crate::theming::Theming;
 
@@ -28,6 +30,7 @@ const READER: &str = "reader";
 const SAVE_DELAY: Duration = Duration::from_millis(800);
 
 const SPEED_SETTING: &str = "reading_speed";
+const PREFS_SETTING: &str = "reader_prefs";
 /// foliate-js counts a "location" as this many bytes of text.
 const BYTES_PER_LOCATION: f64 = 1500.0;
 /// The fixed pace foliate-js's time estimates assume, which we rescale.
@@ -42,6 +45,10 @@ pub struct Window {
     toc: Rc<TocView>,
     toc_items: RefCell<Vec<TocItem>>,
     cmdline: gtk::Entry,
+    settings: Rc<SettingsView>,
+    /// Reading preferences for every book, and the open book's own, if any.
+    prefs: RefCell<ReaderPrefs>,
+    book_prefs: RefCell<Option<ReaderPrefs>>,
     toast: gtk::Label,
     toast_timer: RefCell<Option<glib::SourceId>>,
     theming: Rc<RefCell<Theming>>,
@@ -140,11 +147,20 @@ impl Window {
             .visible(false)
             .css_classes(["cmdline"])
             .build();
+        let settings = SettingsView::new({
+            let with_window = with_window.clone();
+            move |scope, prefs| {
+                if let Some(win) = with_window() {
+                    win.change_prefs(scope, prefs);
+                }
+            }
+        });
         let reader_overlay = gtk::Overlay::new();
         reader_overlay.set_child(Some(&reader.view));
         reader_overlay.add_overlay(&status.bar);
         reader_overlay.add_overlay(&toc.root);
         reader_overlay.add_overlay(&cmdline);
+        reader_overlay.add_overlay(&settings.root);
 
         let stack = gtk::Stack::builder()
             .transition_type(gtk::StackTransitionType::Crossfade)
@@ -180,6 +196,14 @@ impl Window {
             toc,
             toc_items: RefCell::default(),
             cmdline,
+            settings,
+            prefs: RefCell::new(
+                db.as_ref()
+                    .and_then(|db| db.setting(PREFS_SETTING).ok().flatten())
+                    .and_then(|s| ReaderPrefs::from_json(&s))
+                    .unwrap_or_default(),
+            ),
+            book_prefs: RefCell::default(),
             toast,
             toast_timer: RefCell::default(),
             theming,
@@ -298,6 +322,14 @@ impl Window {
         self.toc_items.borrow_mut().clear();
         self.page.take();
         self.last_location.take();
+        self.settings.close();
+        self.book_prefs.replace(
+            self.db
+                .as_ref()
+                .and_then(|db| db.book_prefs(&book.identity).ok().flatten())
+                .and_then(|s| ReaderPrefs::from_json(&s)),
+        );
+        self.apply_prefs();
         self.status.section.set_label("");
         self.status.position.set_label("");
         self.reader.open(book.path.clone(), cfi.as_deref());
@@ -321,7 +353,12 @@ impl Window {
             book.progress = Some(current.progress);
             self.library.update_book(book);
         }
+        self.settings.close();
+        self.book_prefs.take();
         self.reader.close();
+        if self.theming.borrow_mut().set_book_theme(None) {
+            self.push_palette(&self.theming.borrow().theme().clone());
+        }
         self.window.set_title(Some("Omaread"));
         self.stack.set_visible_child_name(LIBRARY);
         self.library.focus();
@@ -332,6 +369,8 @@ impl Window {
             Context::Library
         } else if self.toc.is_open() {
             Context::Toc
+        } else if self.settings.is_open() {
+            Context::Settings
         } else {
             Context::Reader
         }
@@ -344,7 +383,11 @@ impl Window {
 
     fn on_event(&self, event: Event) {
         match event {
-            Event::Ready => self.push_palette(self.theming.borrow().theme()),
+            Event::Ready => {
+                let theme = self.theming.borrow().theme().clone();
+                self.push_palette(&theme);
+                self.reader.call("setPrefs", &serde_json::to_string(&self.effective_prefs()).unwrap_or_default());
+            }
             Event::BookReady { toc, .. } => {
                 self.toc.set_items(&toc);
                 self.toc_items.replace(toc);
@@ -474,6 +517,65 @@ impl Window {
         self.status.position.set_label(&parts.join("  ·  "));
     }
 
+    /// The preferences in force: the book's own, or everyone's.
+    fn effective_prefs(&self) -> ReaderPrefs {
+        self.book_prefs.borrow().clone().unwrap_or_else(|| self.prefs.borrow().clone())
+    }
+
+    fn apply_prefs(&self) {
+        let prefs = self.effective_prefs();
+        self.reader.call("setPrefs", &serde_json::to_string(&prefs).unwrap_or_default());
+        let changed = self.theming.borrow_mut().set_book_theme(prefs.theme.as_deref());
+        if changed {
+            let theme = self.theming.borrow().theme().clone();
+            self.push_palette(&theme);
+        }
+    }
+
+    /// From the settings panel. `None` drops the book's own preferences.
+    fn change_prefs(&self, scope: Scope, prefs: Option<ReaderPrefs>) {
+        let identity = self.current.borrow().as_ref().map(|c| c.book.identity.clone());
+        match (scope, prefs) {
+            (Scope::AllBooks, Some(p)) => {
+                if let Some(db) = &self.db {
+                    let _ = db.set_setting(PREFS_SETTING, &p.to_json());
+                }
+                self.prefs.replace(p);
+            }
+            (Scope::ThisBook, Some(p)) => {
+                if let (Some(db), Some(id)) = (&self.db, &identity) {
+                    let _ = db.set_book_prefs(id, Some(&p.to_json()));
+                }
+                self.book_prefs.replace(Some(p));
+            }
+            (_, None) => {
+                if let (Some(db), Some(id)) = (&self.db, &identity) {
+                    let _ = db.set_book_prefs(id, None);
+                }
+                self.book_prefs.take();
+                self.settings.show(&self.prefs.borrow(), Scope::AllBooks);
+            }
+        }
+        self.apply_prefs();
+    }
+
+    /// A quick change from a key: to the book's own set if it has one.
+    fn tweak_prefs(&self, change: impl FnOnce(&mut ReaderPrefs)) {
+        let scope = if self.book_prefs.borrow().is_some() { Scope::ThisBook } else { Scope::AllBooks };
+        let mut prefs = self.effective_prefs();
+        change(&mut prefs);
+        let prefs = prefs.sanitized();
+        self.change_prefs(scope, Some(prefs.clone()));
+        if self.settings.is_open() {
+            self.settings.show(&prefs, scope);
+        }
+    }
+
+    fn open_settings(&self) {
+        let scope = if self.book_prefs.borrow().is_some() { Scope::ThisBook } else { Scope::AllBooks };
+        self.settings.open(&self.effective_prefs(), scope);
+    }
+
     fn open_toc(&self) {
         if self.toc.is_empty() {
             self.show_toast("This book has no table of contents", false);
@@ -587,6 +689,23 @@ impl Window {
             (Context::Toc, Action::First) => self.toc.move_cursor(i32::MIN / 2),
             (Context::Toc, Action::Last) => self.toc.move_cursor(i32::MAX / 2),
             (Context::Toc, Action::Open) => self.toc.activate(),
+            (Context::Reader, Action::Settings) => self.open_settings(),
+            (Context::Reader, Action::Bigger) => self.tweak_prefs(|p| p.font_size += 1),
+            (Context::Reader, Action::Smaller) => self.tweak_prefs(|p| p.font_size = p.font_size.saturating_sub(1)),
+            (Context::Reader, Action::CycleTheme) => self.tweak_prefs(|p| {
+                p.theme = match p.theme.as_deref() {
+                    None => Some("light".into()),
+                    Some("light") => Some("dark".into()),
+                    Some("dark") => Some("sepia".into()),
+                    _ => None,
+                }
+            }),
+            (Context::Settings, Action::Move(0, dy)) => self.settings.move_cursor(dy),
+            (Context::Settings, Action::Move(dx, _)) => self.settings.adjust(dx.signum()),
+            (Context::Settings, Action::Close) => {
+                self.settings.close();
+                self.reader.view.grab_focus();
+            }
             (Context::Toc, Action::Close) => {
                 self.toc.close();
                 self.reader.view.grab_focus();
@@ -633,6 +752,11 @@ impl Window {
             }
             _ => {}
         }
+    }
+
+    #[cfg(debug_assertions)]
+    pub fn debug_eval(&self, expr: &str) {
+        self.reader.debug_eval(expr);
     }
 
     fn show_toast(&self, text: &str, error: bool) {

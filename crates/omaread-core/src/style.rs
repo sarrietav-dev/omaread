@@ -123,6 +123,15 @@ window.omaread * {{ border-radius: 0; }}
   margin: {lg}px;
   margin-bottom: {panel_bottom}px;
 }}
+list.settings-list {{ background: none; font-size: {body_small}px; }}
+list.settings-list > row {{
+  padding: {xs}px {sm}px;
+  border: {nbw}px solid transparent;
+}}
+list.settings-list > row:selected {{ background-color: {selected_fill}; }}
+list.settings-list > row:selected .value {{ color: {accent_text}; }}
+list.settings-list .value {{ color: {muted}; font-feature-settings: "tnum"; }}
+
 listview.toc-list {{ background: none; font-size: {body_small}px; }}
 listview.toc-list > row {{
   padding: {xs}px {sm}px;

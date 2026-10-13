@@ -42,6 +42,13 @@ const MIGRATIONS: &[&str] = &[
         value  TEXT NOT NULL
     );
     "#,
+    // 3: per-book reading preferences, replacing the global ones
+    r#"
+    CREATE TABLE book_prefs (
+        identity  TEXT PRIMARY KEY,
+        prefs     TEXT NOT NULL
+    );
+    "#,
 ];
 
 pub struct Db {
@@ -168,6 +175,22 @@ impl Db {
         self.conn
             .prepare_cached("INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value")?
             .execute([key, value])?;
+        Ok(())
+    }
+
+    pub fn book_prefs(&self, identity: &str) -> Result<Option<String>, Error> {
+        self.conn.query_row("SELECT prefs FROM book_prefs WHERE identity = ?1", [identity], |r| r.get(0)).optional()
+    }
+
+    /// `None` drops the book's own preferences.
+    pub fn set_book_prefs(&self, identity: &str, prefs: Option<&str>) -> Result<(), Error> {
+        match prefs {
+            Some(p) => self
+                .conn
+                .prepare_cached("INSERT INTO book_prefs (identity, prefs) VALUES (?1, ?2) ON CONFLICT(identity) DO UPDATE SET prefs = excluded.prefs")?
+                .execute([identity, p])?,
+            None => self.conn.prepare_cached("DELETE FROM book_prefs WHERE identity = ?1")?.execute([identity])?,
+        };
         Ok(())
     }
 
