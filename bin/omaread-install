@@ -3,9 +3,6 @@
 #
 #   bin/omaread-install            build, then install to ~/.local
 #   bin/omaread-install --default  also make Omaread the default app for EPUBs
-#
-# On Omarchy it also puts the Omaread widget on the bar
-# (omaread plugin remove takes it off).
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -20,11 +17,6 @@ cargo build --release
 /usr/bin/install -Dm644 "data/$APP_ID.svg" "$PREFIX/icons/hicolor/scalable/apps/$APP_ID.svg"
 update-desktop-database "$PREFIX/applications" 2>/dev/null || true
 gtk-update-icon-cache -q "$PREFIX/icons/hicolor" 2>/dev/null || true
-
-# The bar widget, on Omarchy.
-if command -v omarchy-shell >/dev/null && [[ -d "$HOME/.config/omarchy/plugins" ]]; then
-  "$BIN/omaread" plugin install || echo "Could not add the bar widget; try: omaread plugin install"
-fi
 
 if [[ "${1:-}" == "--default" ]]; then
   xdg-mime default "$APP_ID.desktop" application/epub+zip

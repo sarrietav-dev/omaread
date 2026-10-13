@@ -21,7 +21,7 @@ library in `~/Documents/Books`.
 | Translate | Spanish ⇄ English: text detected as Spanish goes to English, anything else goes to Spanish |
 | Reading mode | Paginated by default (auto columns: 2 when wide); scrolled supported and switchable per book |
 | Book fonts | Publisher fonts by default, with a serif fallback; overridable globally and per book |
-| Bar widget | Yes: an Omarchy shell plugin showing the current book, progress and time left; click to resume |
+| Bar widget | No plugin. The app ships `omaread status --json` (current book, chapter, progress, time left) for a bar to read |
 
 ## Architecture
 
@@ -270,11 +270,8 @@ sentence-by-sentence without the mouse.
 7. **Lookups:** provider system, the three defaults, `command` and `url`
    kinds.
 8. **TTS:** SSIP client, SSML marks, sentence highlight, TTS bar.
-9. **Bar widget:** an Omarchy shell plugin (QML, like Omacharts' watchlist)
-   showing the current book, progress and time left, fed by
-   `omaread status --json`.
-10. **Polish:** help overlay, keymap config, library smoke test,
-    `bin/omaread-install` + PKGBUILD.
+9. **Polish:** help overlay, keymap config, library smoke test,
+   `bin/omaread-install` + PKGBUILD.
 
 ## Hooks for future AI features
 

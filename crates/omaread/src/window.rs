@@ -476,7 +476,6 @@ impl Window {
         self.settings.close();
         self.book_prefs.take();
         self.reader.close();
-        crate::plugin::notify_changed();
         if self.theming.borrow_mut().set_book_theme(None) {
             self.push_palette(&self.theming.borrow().theme().clone());
         }

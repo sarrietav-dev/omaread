@@ -4,7 +4,6 @@ mod keys;
 mod library_view;
 mod lookup_view;
 mod palette;
-mod plugin;
 mod reader;
 mod search_view;
 mod service;
@@ -29,7 +28,6 @@ fn main() -> glib::ExitCode {
         Some("import-foliate") => return import_foliate(),
         Some("lookup") => return lookup(&args[2..]),
         Some("status") => return status(),
-        Some("plugin") => return plugin::command(args.get(2).map(String::as_str)),
         _ => {}
     }
 
@@ -63,11 +61,6 @@ fn main() -> glib::ExitCode {
             win
         }
     };
-
-    // An installed bar widget follows this build.
-    app.connect_startup(|_| {
-        std::thread::spawn(plugin::refresh);
-    });
 
     app.connect_activate({
         let ensure = ensure.clone();
