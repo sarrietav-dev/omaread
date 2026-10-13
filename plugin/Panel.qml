@@ -38,6 +38,14 @@ Panel {
   readonly property color dim: Qt.darker(foreground, 1.6)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
+  // The service polls on a timer; the widget owns the setting that tunes it.
+  readonly property int refreshIntervalSec: {
+    var value = Number(setting("refreshIntervalSec", 300))
+    return isFinite(value) ? Math.max(60, Math.min(3600, value)) : 300
+  }
+  onRefreshIntervalSecChanged: if (hostedService) hostedService.refreshIntervalSec = refreshIntervalSec
+  onHostedServiceChanged: if (hostedService) hostedService.refreshIntervalSec = refreshIntervalSec
+
   function moveSelection(delta) {
     if (!reading.length) return
     selectedIndex = Math.max(0, Math.min(reading.length - 1, selectedIndex + delta))

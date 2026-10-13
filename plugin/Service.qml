@@ -8,15 +8,12 @@ import "Model.js" as Model
 Item {
   id: root
 
-  property var settings: ({})
   property var reading: []
   property string lastError: ""
   readonly property bool refreshing: statusProcess.running
 
-  readonly property int refreshIntervalSec: {
-    var value = parseInt(String(settings && settings.refreshIntervalSec ? settings.refreshIntervalSec : 300), 10)
-    return isFinite(value) ? Math.max(60, Math.min(3600, value)) : 300
-  }
+  // The widget owns the `refreshIntervalSec` setting and pushes it here.
+  property int refreshIntervalSec: 300
 
   property string _output: ""
   property string _error: ""
@@ -35,7 +32,7 @@ Item {
   Component.onCompleted: refresh()
 
   Timer {
-    interval: root.refreshIntervalSec * 1000
+    interval: Math.max(60, Math.min(3600, root.refreshIntervalSec)) * 1000
     repeat: true
     running: true
     onTriggered: root.refresh()
