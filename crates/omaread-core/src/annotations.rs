@@ -250,7 +250,7 @@ pub fn import_foliate(db: &Db, dir: &Path, books: &[Book], now: i64) -> Result<I
             let existing = db.progress(&book.identity)?;
             if existing.is_none() {
                 let fraction = fb.progress.filter(|(_, t)| *t > 0.0).map(|(c, t)| (c / t).clamp(0.0, 1.0)).unwrap_or(0.0);
-                db.save_progress(&book.identity, &Progress { cfi: Some(cfi), fraction, opened_at: 0 })?;
+                db.save_progress(&book.identity, &Progress { cfi: Some(cfi), fraction, opened_at: 0, ..Default::default() })?;
                 report.positions += 1;
             }
         }

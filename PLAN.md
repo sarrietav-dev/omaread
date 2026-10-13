@@ -63,7 +63,7 @@ crates/omaread-core/          library, db, epub, theme, config, providers, tts, 
 crates/omaread/               GTK app: window, library, reader, overlays, keymap, bridge
 web/                          reader.html, bridge.js, foliate-js (git subtree, pinned)
 data/                         .desktop, icon, MIME association, GResource xml
-bin/install, packaging/aur/   like Omacharts
+bin/omaread-install, packaging/aur/   like Omacharts
 ```
 
 Main crates: `gtk4`, `libadwaita`, `webkit6`, `rusqlite` (bundled),
@@ -274,7 +274,7 @@ sentence-by-sentence without the mouse.
    showing the current book, progress and time left, fed by
    `omaread status --json`.
 10. **Polish:** help overlay, keymap config, library smoke test,
-    `bin/install` + PKGBUILD.
+    `bin/omaread-install` + PKGBUILD.
 
 ## Hooks for future AI features
 

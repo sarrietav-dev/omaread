@@ -476,6 +476,7 @@ impl Window {
         self.settings.close();
         self.book_prefs.take();
         self.reader.close();
+        crate::plugin::notify_changed();
         if self.theming.borrow_mut().set_book_theme(None) {
             self.push_palette(&self.theming.borrow().theme().clone());
         }
@@ -613,6 +614,12 @@ impl Window {
             let Some(current) = current.as_mut() else { return };
             current.progress.cfi = location.cfi.clone().or(current.progress.cfi.take());
             current.progress.fraction = location.fraction.clamp(0.0, 1.0);
+            if let Some(chapter) = &location.toc_label {
+                current.progress.chapter = Some(chapter.clone());
+            }
+            if let Some(time) = location.time {
+                current.progress.minutes_left = Some(self.speed.get().minutes_for(time.total * FOLIATE_BYTES_PER_MINUTE));
+            }
             current.dirty = true;
         }
         if let Some(timer) = self.save_timer.take() {

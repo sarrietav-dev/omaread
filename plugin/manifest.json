@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "id": "sarrietav-dev.omaread",
+  "name": "Omaread",
+  "version": "1.0.1",
+  "author": "Sebastian Arrieta",
+  "license": "MIT",
+  "description": "The book you're reading, in the bar.",
+  "kinds": ["service", "bar-widget"],
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Omaread",
+    "description": "What you're reading, how far along, and the way back in.",
+    "category": "Information",
+    "aliases": ["books", "reading", "ebook", "omaread"],
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "refreshIntervalSec": 300
+    },
+    "schema": [
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "min": 60,
+        "max": 3600,
+        "step": 60,
+        "defaultValue": 300
+      }
+    ]
+  }
+}

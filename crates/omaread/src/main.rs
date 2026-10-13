@@ -4,6 +4,7 @@ mod keys;
 mod library_view;
 mod lookup_view;
 mod palette;
+mod plugin;
 mod reader;
 mod search_view;
 mod service;
@@ -27,6 +28,8 @@ fn main() -> glib::ExitCode {
         Some("scan") => return scan(),
         Some("import-foliate") => return import_foliate(),
         Some("lookup") => return lookup(&args[2..]),
+        Some("status") => return status(),
+        Some("plugin") => return plugin::command(args.get(2).map(String::as_str)),
         _ => {}
     }
 
@@ -61,6 +64,11 @@ fn main() -> glib::ExitCode {
         }
     };
 
+    // An installed bar widget follows this build.
+    app.connect_startup(|_| {
+        std::thread::spawn(plugin::refresh);
+    });
+
     app.connect_activate({
         let ensure = ensure.clone();
         move |app| ensure(app).window.present()
@@ -74,6 +82,46 @@ fn main() -> glib::ExitCode {
     });
 
     app.run()
+}
+
+/// `omaread status [--json]`: the books you're reading, latest first. The bar
+/// widget reads this.
+fn status() -> glib::ExitCode {
+    let paths = omaread_core::library::Paths::from_env();
+    let books = match paths.open_db().and_then(|db| omaread_core::library::load(&db)) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("omaread: {e}");
+            return glib::ExitCode::FAILURE;
+        }
+    };
+    let mut reading: Vec<_> = books.into_iter().filter(|b| b.in_progress()).collect();
+    reading.sort_by(|a, b| b.opened_at().cmp(&a.opened_at()));
+    let json: Vec<serde_json::Value> = reading
+        .iter()
+        .take(8)
+        .map(|b| {
+            let p = b.progress.clone().unwrap_or_default();
+            serde_json::json!({
+                "title": b.title,
+                "authors": b.authors,
+                "path": b.path,
+                "cover": b.cover,
+                "fraction": p.fraction,
+                "chapter": p.chapter,
+                "minutesLeft": p.minutes_left,
+                "openedAt": p.opened_at,
+            })
+        })
+        .collect();
+    if std::env::args().any(|a| a == "--json") {
+        println!("{}", serde_json::json!({ "reading": json }));
+    } else {
+        for b in &reading {
+            println!("{:>3.0}%  {}", b.fraction() * 100.0, b.title);
+        }
+    }
+    glib::ExitCode::SUCCESS
 }
 
 /// `omaread lookup <key> <text…> [--lang xx]`: what the lookup card would show.

@@ -76,6 +76,11 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (provider, query)
     );
     "#,
+    // 6: what the bar widget shows without opening the book
+    r#"
+    ALTER TABLE progress ADD COLUMN chapter TEXT;
+    ALTER TABLE progress ADD COLUMN minutes_left REAL;
+    "#,
 ];
 
 pub struct Db {
@@ -105,6 +110,9 @@ pub struct Progress {
     pub cfi: Option<String>,
     pub fraction: f64,
     pub opened_at: i64,
+    /// The chapter you were in, and the time left in the book at your pace.
+    pub chapter: Option<String>,
+    pub minutes_left: Option<f64>,
 }
 
 /// Authors are stored as one string; this byte can't appear in a name.
@@ -228,27 +236,33 @@ impl Db {
     pub fn progress(&self, identity: &str) -> Result<Option<Progress>, Error> {
         self.conn
             .query_row(
-                "SELECT cfi, fraction, opened_at FROM progress WHERE identity = ?1",
+                "SELECT cfi, fraction, opened_at, chapter, minutes_left FROM progress WHERE identity = ?1",
                 [identity],
-                |r| Ok(Progress { cfi: r.get(0)?, fraction: r.get(1)?, opened_at: r.get(2)? }),
+                |r| Ok(Progress { cfi: r.get(0)?, fraction: r.get(1)?, opened_at: r.get(2)?, chapter: r.get(3)?, minutes_left: r.get(4)? }),
             )
             .optional()
     }
 
     pub fn all_progress(&self) -> Result<Vec<(String, Progress)>, Error> {
-        let mut stmt = self.conn.prepare_cached("SELECT identity, cfi, fraction, opened_at FROM progress")?;
-        stmt.query_map([], |r| Ok((r.get(0)?, Progress { cfi: r.get(1)?, fraction: r.get(2)?, opened_at: r.get(3)? })))?
+        let mut stmt = self.conn.prepare_cached("SELECT identity, cfi, fraction, opened_at, chapter, minutes_left FROM progress")?;
+        stmt.query_map([], |r| {
+            Ok((
+                r.get(0)?,
+                Progress { cfi: r.get(1)?, fraction: r.get(2)?, opened_at: r.get(3)?, chapter: r.get(4)?, minutes_left: r.get(5)? },
+            ))
+        })?
             .collect()
     }
 
     pub fn save_progress(&self, identity: &str, p: &Progress) -> Result<(), Error> {
         self.conn
             .prepare_cached(
-                "INSERT INTO progress (identity, cfi, fraction, opened_at) VALUES (?1, ?2, ?3, ?4)
+                "INSERT INTO progress (identity, cfi, fraction, opened_at, chapter, minutes_left) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                  ON CONFLICT(identity) DO UPDATE SET
-                    cfi = excluded.cfi, fraction = excluded.fraction, opened_at = excluded.opened_at",
+                    cfi = excluded.cfi, fraction = excluded.fraction, opened_at = excluded.opened_at,
+                    chapter = excluded.chapter, minutes_left = excluded.minutes_left",
             )?
-            .execute(params![identity, p.cfi, p.fraction, p.opened_at])?;
+            .execute(params![identity, p.cfi, p.fraction, p.opened_at, p.chapter, p.minutes_left])?;
         Ok(())
     }
 }
@@ -294,7 +308,7 @@ mod tests {
     fn progress_round_trips() {
         let db = Db::in_memory().unwrap();
         assert_eq!(db.progress("x").unwrap(), None);
-        let p = Progress { cfi: Some("epubcfi(/6/4)".into()), fraction: 0.25, opened_at: 10 };
+        let p = Progress { cfi: Some("epubcfi(/6/4)".into()), fraction: 0.25, opened_at: 10, chapter: Some("One".into()), minutes_left: Some(90.0) };
         db.save_progress("x", &p).unwrap();
         assert_eq!(db.progress("x").unwrap(), Some(p));
     }

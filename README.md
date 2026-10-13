@@ -14,8 +14,8 @@ Foliate, inside a WebKitGTK view; everything else is Rust and GTK4.
 
 ```sh
 sudo pacman -S --needed base-devel rust gtk4 libadwaita webkitgtk-6.0
-bin/install            # builds and installs to ~/.local
-bin/install --default  # …and makes Omaread the app for EPUB files
+bin/omaread-install            # builds and installs to ~/.local
+bin/omaread-install --default  # …and makes Omaread the app for EPUB files
 ```
 
 Omaread reads the EPUBs under `~/Documents/Books`; each folder is a shelf.
@@ -114,6 +114,12 @@ supports it. `omaread lookup d goroutine` prints what the card would show.
 Reading aloud goes through speech-dispatcher (so your piper voices work),
 one sentence at a time with the sentence highlighted; it turns pages and
 moves through chapters on its own. Voice and speed are remembered.
+
+On Omarchy, Omaread also puts a widget on the bar: the book you're reading,
+how far along and the time left, one click from resuming. `bin/omaread-install`
+adds it; `omaread plugin install` does it on its own, and `omaread plugin
+remove` takes it off. The widget reads `omaread status --json`, and Omaread
+pings it whenever you close a book.
 
 Coming from Foliate? On first run Omaread brings over your reading
 positions, highlights, notes and bookmarks (`omaread import-foliate` does it
