@@ -7,6 +7,7 @@ import { makeBook } from '../foliate-js/view.js'
 import { Overlayer } from '../foliate-js/overlayer.js'
 import * as CFI from '../foliate-js/epubcfi.js'
 import { BODY_PARAGRAPH, markPublisherHeadings } from './typography.js'
+import { colorCSS } from './colors.js'
 
 const emit = msg => globalThis.webkit.messageHandlers.omaread.postMessage(JSON.stringify(msg))
 
@@ -160,31 +161,7 @@ const bookCSS = () => {
     p[data-omaread-display="title"], p[data-omaread-display="number"] {
         text-align: center !important;
     }
-    ${p ? `
-    html {
-        color-scheme: ${p.mode === 'dark' ? 'dark' : 'light'};
-    }
-    html, body {
-        color: ${p.fg} !important;
-        background: none !important;
-    }
-    body * {
-        color: inherit !important;
-        border-color: color-mix(in srgb, currentColor 35%, transparent) !important;
-        background-color: transparent !important;
-    }
-    pre, pre *, code, kbd, samp, tt {
-        background-color: ${p.surface} !important;
-    }
-    a:any-link, a:any-link * {
-        color: ${p.link} !important;
-        text-decoration-color: color-mix(in srgb, currentColor 40%, transparent);
-        text-underline-offset: .12em;
-    }
-    ::selection { background: ${p.selection}; }
-    ::highlight(${TTS_HIGHLIGHT}) { background-color: color-mix(in srgb, ${p.link} 30%, transparent); color: inherit; }
-    svg, img { background-color: transparent !important; }
-    ` : ''}
+    ${p ? colorCSS(p, TTS_HIGHLIGHT) : ''}
 `]
 }
 
