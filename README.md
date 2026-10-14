@@ -5,6 +5,8 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-7daea3?style=flat-square)](LICENSE)
 [![Made for Omarchy](https://img.shields.io/badge/made%20for-Omarchy-7daea3?style=flat-square)](https://omarchy.org)
 
+[![A short tour of Omaread: the library, reading, contents, the command palette, settings and help](docs/omaread.webp)](docs/omaread.mp4)
+
 ![Omaread reading a book, with the status line showing the chapter and time left](docs/reading.webp)
 
 Omaread wears your Omarchy theme and follows it live: colours from
@@ -24,7 +26,13 @@ bin/omaread-install            # builds and installs to ~/.local
 bin/omaread-install --default  # …and makes Omaread the app for EPUB files
 ```
 
-Or from the AUR: `yay -S omaread-git` (the PKGBUILD is in `packaging/aur/`).
+Or from the AUR, prebuilt or built from the latest commit (the PKGBUILDs are
+in `packaging/aur/`):
+
+```sh
+yay -S omaread-bin
+yay -S omaread-git
+```
 
 Omaread reads the EPUBs under `~/Documents/Books`; each folder is a shelf.
 Other folders go in `~/.config/omaread/config.toml`:

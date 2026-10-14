@@ -1,0 +1,41 @@
+# On a version tag (v0.1.0), build on Arch and attach the binary tarball the
+# omaread-bin AUR package installs from.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Install build dependencies
+        run: pacman -Syu --noconfirm --needed base-devel git rust gtk4 libadwaita webkitgtk-6.0
+
+      - uses: actions/checkout@v4
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Package
+        run: |
+          dir="omaread-${GITHUB_REF_NAME#v}-x86_64"
+          mkdir "$dir"
+          install -m755 target/release/omaread "$dir/"
+          cp data/io.github.sarrietav_dev.Omaread.desktop data/io.github.sarrietav_dev.Omaread.svg \
+            LICENSE README.md "$dir/"
+          tar czf "$dir.tar.gz" "$dir"
+          sha256sum "$dir.tar.gz" > "$dir.tar.gz.sha256"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: omaread-*-x86_64.tar.gz*
+          generate_release_notes: true
