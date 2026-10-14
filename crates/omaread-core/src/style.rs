@@ -330,7 +330,7 @@ list.search-list > row:selected b {{ color: {accent_text}; }}
 .help .what {{ color: {fg}; }}
 
 /* Library */
-.library-rail-scroller {{
+.library-side {{
   min-width: {rail}px;
   border-right: {hairline}px solid {rule};
 }}
@@ -349,6 +349,37 @@ list.search-list > row:selected b {{ color: {accent_text}; }}
 .library-rail row.shelf-row.special {{ color: {fg}; }}
 .library-rail row.shelf-row.special:selected {{ color: {accent_text}; }}
 .library-rail .count {{ font-size: {caption}px; color: {muted}; font-feature-settings: "tnum"; }}
+.library-rail row.shelf-row.root {{ color: {fg}; }}
+.library-rail row.shelf-row.root:selected {{ color: {accent_text}; }}
+.library-rail button.fold,
+.library-rail button.remove {{
+  background: none;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+  min-width: {body_small}px;
+  min-height: 0;
+  color: {muted};
+  font-size: {body_small}px;
+}}
+.library-rail button.fold:disabled,
+.library-rail button.remove:disabled {{ opacity: 0; }}
+.library-rail button.fold:hover,
+.library-rail button.remove:hover {{ color: {accent_text}; }}
+.library-rail button.remove {{ opacity: 0; }}
+.library-rail row.shelf-row:hover button.remove:not(:disabled),
+.library-rail row.shelf-row:selected button.remove:not(:disabled) {{ opacity: 1; }}
+button.library-add {{
+  margin: {sm}px {row_x}px;
+  padding: {xs}px {md}px;
+  background: none;
+  border: {hairline}px solid {rule};
+  box-shadow: none;
+  color: {muted};
+  font-size: {body_small}px;
+  min-height: 0;
+}}
+button.library-add:hover {{ color: {accent_text}; border-color: {accent}; background-color: {hover_fill}; }}
 
 .library-header {{
   padding: {md}px {row_x}px;

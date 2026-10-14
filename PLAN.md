@@ -14,7 +14,7 @@ library in `~/Documents/Books`.
 | UI style | Overlay-only: the book fills the window, and every panel (TOC, search, lookup, annotations, settings, palette) is an overlay drawn over it. Library is a full-screen cover grid. |
 | Look | Omarchy shell design tokens (`Style.qml` + theme `shell.toml` + `colors.toml`) ported to GTK CSS: square corners, Omarchy font, hairline borders, 4/8/18/22% fill states, accent focus ring |
 | Keys | Vim-style everywhere, `?` shows all bindings, `:` command palette |
-| Library | Cover grid over `~/Documents/Books` (EPUB only; PDFs/DjVu ignored); top-level folders become shelves |
+| Library | Cover grid over folders the reader adds (EPUB only; PDFs/DjVu ignored); the sidebar shows each as a collapsible folder tree |
 | Lookups | Pluggable providers in config; defaults: Wiktionary, Wikipedia, translate |
 | TTS | speech-dispatcher over SSIP (your piper module + voices) |
 | Future | AI features: designed in via the command registry, provider system, and CLI (see the last section) |

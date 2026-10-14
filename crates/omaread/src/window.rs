@@ -1,13 +1,13 @@
 //! The window: the library, or a book filling it with the chrome floating over.
 
 use std::cell::{Cell, RefCell};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use adw::prelude::*;
 use gtk::{gio, glib};
-use omaread_core::config::Config;
+use omaread_core::config::{self, Config};
 use omaread_core::db::{Db, Progress};
 use omaread_core::annotations::{self, Annotation, Kind};
 use omaread_core::command::{self, Command, ExportFormat};
@@ -141,7 +141,7 @@ struct Status {
 impl Window {
     pub fn new(app: &adw::Application) -> Rc<Window> {
         let theming = Rc::new(RefCell::new(Theming::load()));
-        let config = Config::load();
+        let mut config = Config::load();
         let paths = Paths::from_env();
         let db = match paths.open_db() {
             Ok(db) => Some(db),
@@ -150,6 +150,7 @@ impl Window {
                 None
             }
         };
+        config.adopt_old_default(db.as_ref().is_some_and(|db| db.stamps().is_ok_and(|s| !s.is_empty())));
 
         let window = adw::ApplicationWindow::builder()
             .application(app)
@@ -175,14 +176,32 @@ impl Window {
                 }
             }
         });
-        let library = LibraryView::new({
-            let with_window = with_window.clone();
-            move |book| {
-                if let Some(win) = with_window() {
-                    win.open_book(book);
+        let library = LibraryView::new(
+            {
+                let with_window = with_window.clone();
+                move |book| {
+                    if let Some(win) = with_window() {
+                        win.open_book(book);
+                    }
                 }
-            }
-        });
+            },
+            {
+                let with_window = with_window.clone();
+                move || {
+                    if let Some(win) = with_window() {
+                        win.add_folder();
+                    }
+                }
+            },
+            {
+                let with_window = with_window.clone();
+                move |path| {
+                    if let Some(win) = with_window() {
+                        win.remove_folder(&path);
+                    }
+                }
+            },
+        );
 
         let status = status_line();
         let toc = TocView::new({
@@ -381,6 +400,7 @@ impl Window {
             }
         });
 
+        win.library.set_folders(config.library_folders());
         let service = Service::start(paths, config.library_folders(), {
             let win = Rc::downgrade(&win);
             move |books| {
@@ -1614,7 +1634,8 @@ impl Window {
         self.window.add_controller(keys);
     }
 
-    /// Re-read config.toml when it changes and rebuild the keymap.
+    /// Re-read config.toml when it changes: rebuild the keymap, and follow
+    /// the library's folders.
     fn reload_config(&self) {
         let stamp = Config::fingerprint();
         if stamp == self.config_stamp.get() {
@@ -1623,6 +1644,80 @@ impl Window {
         self.config_stamp.set(stamp);
         let config = Config::load();
         *self.keymap.borrow_mut() = Keymap::new(&config.keymap);
+        self.apply_folders(config.library_folders());
+    }
+
+    fn apply_folders(&self, folders: Vec<PathBuf>) {
+        let service = self.service.borrow();
+        let Some(service) = service.as_ref() else { return };
+        if service.folders() == folders {
+            return;
+        }
+        self.library.set_folders(folders.clone());
+        self.library.set_scanning(true);
+        service.set_folders(folders);
+    }
+
+    /// The current folders, for adding to or taking from.
+    fn folders(&self) -> Vec<PathBuf> {
+        self.service.borrow().as_ref().map(|s| s.folders()).unwrap_or_default()
+    }
+
+    /// Write the folders to config.toml and read them from now on.
+    fn save_folders(&self, folders: Vec<PathBuf>) -> bool {
+        if let Err(e) = config::save_library_folders(&Config::path(), &folders) {
+            self.show_toast(&format!("Couldn't save the folders to config.toml: {e}"), true);
+            return false;
+        }
+        self.config_stamp.set(Config::fingerprint());
+        self.apply_folders(folders);
+        true
+    }
+
+    /// Pick a folder (through the desktop's portal) and add it.
+    fn add_folder(&self) {
+        let dialog = gtk::FileDialog::builder().title("Add a folder of books").modal(true).build();
+        if let Some(home) = std::env::var_os("HOME") {
+            dialog.set_initial_folder(Some(&gio::File::for_path(home)));
+        }
+        let win = self.me.borrow().clone();
+        dialog.select_folder(Some(&self.window), gio::Cancellable::NONE, move |result| {
+            let Some(win) = win.upgrade() else { return };
+            match result.ok().and_then(|f| f.path()) {
+                Some(path) => win.add_folder_path(path),
+                // Cancelled, or a place with no local path (a remote share).
+                None => win.library.focus(),
+            }
+        });
+    }
+
+    fn add_folder_path(&self, path: PathBuf) {
+        match library::add_folder(&self.folders(), &path) {
+            library::AddFolder::Within(root) if root == path => {
+                self.show_toast(&format!("{} is already in the library", config::contract(&path)), false);
+            }
+            library::AddFolder::Within(root) => {
+                self.show_toast(&format!("Already in the library, inside {}", config::contract(&root)), false);
+            }
+            library::AddFolder::Folders(folders) => {
+                if !self.save_folders(folders) {
+                    return;
+                }
+                self.show_toast(&format!("Added {}", config::contract(&path)), false);
+            }
+        }
+        self.library.show_folder(&path);
+        self.library.focus();
+    }
+
+    /// Stop reading a folder. Its files stay where they are, and its
+    /// positions and highlights are kept for when it comes back.
+    fn remove_folder(&self, path: &Path) {
+        let folders: Vec<PathBuf> = self.folders().into_iter().filter(|f| f != path).collect();
+        if self.save_folders(folders) {
+            self.show_toast(&format!("Removed {} from the library; the files are untouched", config::contract(path)), false);
+        }
+        self.library.focus();
     }
 
     pub fn handle_key(&self, key: gtk::gdk::Key, mods: gtk::gdk::ModifierType) -> glib::Propagation {
@@ -1881,6 +1976,17 @@ impl Window {
             (Context::Library, Action::Sort) => self.library.cycle_sort(),
             (Context::Library, Action::NextShelf) => self.library.step_shelf(1),
             (Context::Library, Action::PrevShelf) => self.library.step_shelf(-1),
+            (Context::Library, Action::AddFolder) => self.add_folder(),
+            (Context::Library, Action::ToggleFolder) => self.library.toggle_folder(),
+            (Context::Library, Action::RemoveFolder) => match self.library.current_folder() {
+                Some(path) if self.folders().contains(&path) => self.remove_folder(&path),
+                Some(path) => {
+                    let root = self.folders().into_iter().find(|r| path.starts_with(r));
+                    let root = root.map(|r| config::contract(&r)).unwrap_or_default();
+                    self.show_toast(&format!("Only the folders you added can be removed; this one is inside {root}"), false);
+                }
+                None => self.show_toast("Pick a folder in the sidebar first", false),
+            },
             (Context::Library, Action::Rescan) => {
                 if let Some(service) = self.service.borrow().as_ref() {
                     service.scan();

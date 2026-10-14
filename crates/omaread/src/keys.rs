@@ -62,6 +62,12 @@ pub enum Action {
     Sort,
     NextShelf,
     PrevShelf,
+    /// Add a folder to the library.
+    AddFolder,
+    /// Remove the folder the sidebar is on.
+    RemoveFolder,
+    /// Open or close the folder the sidebar is on.
+    ToggleFolder,
     Rescan,
     // Both
     Help,
@@ -134,6 +140,9 @@ pub const NAMED: &[(&str, Action)] = &[
     ("sort", Action::Sort),
     ("next_shelf", Action::NextShelf),
     ("prev_shelf", Action::PrevShelf),
+    ("add_folder", Action::AddFolder),
+    ("remove_folder", Action::RemoveFolder),
+    ("toggle_folder", Action::ToggleFolder),
     ("rescan", Action::Rescan),
     ("help", Action::Help),
     ("close", Action::Close),
@@ -577,6 +586,7 @@ fn library(key: Key, ch: Option<char>, shift: bool) -> Option<Action> {
         Key::ISO_Left_Tab => return Some(Action::PrevShelf),
         Key::Home => return Some(Action::First),
         Key::End => return Some(Action::Last),
+        Key::space => return Some(Action::ToggleFolder),
         _ => {}
     }
     match ch? {
@@ -585,6 +595,8 @@ fn library(key: Key, ch: Option<char>, shift: bool) -> Option<Action> {
         'k' => Some(Action::Move(0, -1)),
         'j' => Some(Action::Move(0, 1)),
         'G' => Some(Action::Last),
+        'a' => Some(Action::AddFolder),
+        'D' => Some(Action::RemoveFolder),
         '/' => Some(Action::Filter),
         ':' => Some(Action::CommandLine),
         '?' => Some(Action::Help),

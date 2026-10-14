@@ -5,7 +5,7 @@
 //! library folders asks for a new scan, debounced so copying a folder of
 //! books triggers one scan, not hundreds.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
@@ -16,12 +16,13 @@ use omaread_core::library::{self, Book, Paths};
 
 pub struct Service {
     paths: Paths,
-    folders: Vec<PathBuf>,
+    folders: RefCell<Vec<PathBuf>>,
     books: async_channel::Sender<Result<Vec<Book>, String>>,
+    changed: async_channel::Sender<()>,
     scanning: Rc<Cell<bool>>,
     /// A scan was asked for while one was running.
     again: Rc<Cell<bool>>,
-    _watcher: Option<notify::RecommendedWatcher>,
+    watcher: RefCell<Option<notify::RecommendedWatcher>>,
 }
 
 impl Service {
@@ -30,34 +31,15 @@ impl Service {
         let (books_tx, books_rx) = async_channel::unbounded::<Result<Vec<Book>, String>>();
         let (changed_tx, changed_rx) = async_channel::unbounded::<()>();
 
-        let watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-            let relevant = event.is_ok_and(|e| {
-                !e.kind.is_access()
-                    && e.paths.iter().any(|p| {
-                        p.extension().is_some_and(|x| x.eq_ignore_ascii_case("epub")) || p.extension().is_none()
-                    })
-            });
-            if relevant {
-                let _ = changed_tx.send_blocking(());
-            }
-        })
-        .ok()
-        .map(|mut w| {
-            for folder in &folders {
-                if let Err(e) = w.watch(folder, RecursiveMode::Recursive) {
-                    eprintln!("omaread: not watching {}: {e}", folder.display());
-                }
-            }
-            w
-        });
-
+        let watcher = watch(&folders, changed_tx.clone());
         let service = Rc::new(Service {
             paths,
-            folders,
+            folders: RefCell::new(folders),
             books: books_tx,
+            changed: changed_tx,
             scanning: Rc::default(),
             again: Rc::default(),
-            _watcher: watcher,
+            watcher: RefCell::new(watcher),
         });
 
         glib::spawn_future_local({
@@ -96,13 +78,26 @@ impl Service {
         service
     }
 
+    pub fn folders(&self) -> Vec<PathBuf> {
+        self.folders.borrow().clone()
+    }
+
+    /// Read these folders from now on, and scan them.
+    pub fn set_folders(&self, folders: Vec<PathBuf>) {
+        // Drop the old watch first: it stops before the new one starts.
+        self.watcher.take();
+        self.watcher.replace(watch(&folders, self.changed.clone()));
+        self.folders.replace(folders);
+        self.scan();
+    }
+
     pub fn scan(&self) {
         if self.scanning.replace(true) {
             self.again.set(true);
             return;
         }
         let paths = self.paths.clone();
-        let folders = self.folders.clone();
+        let folders = self.folders();
         let tx = self.books.clone();
         std::thread::spawn(move || {
             let result = paths.open_db().and_then(|mut db| {
@@ -112,4 +107,24 @@ impl Service {
             let _ = tx.send_blocking(result.map_err(|e| e.to_string()));
         });
     }
+}
+
+/// Ask for a scan whenever an EPUB, or a folder that may hold some, changes.
+fn watch(folders: &[PathBuf], changed: async_channel::Sender<()>) -> Option<notify::RecommendedWatcher> {
+    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        let relevant = event.is_ok_and(|e| {
+            !e.kind.is_access()
+                && e.paths.iter().any(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("epub")) || p.extension().is_none())
+        });
+        if relevant {
+            let _ = changed.send_blocking(());
+        }
+    })
+    .ok()?;
+    for folder in folders {
+        if let Err(e) = watcher.watch(folder, RecursiveMode::Recursive) {
+            eprintln!("omaread: not watching {}: {e}", folder.display());
+        }
+    }
+    Some(watcher)
 }

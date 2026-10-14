@@ -1,9 +1,10 @@
 //! `~/.config/omaread/config.toml`. Everything is optional; a missing or
-//! broken file means defaults.
+//! broken file means defaults. The library's folders are added and removed
+//! in the app, which writes them back here, keeping the rest of the file.
 //!
 //! ```toml
 //! [library]
-//! folders = ["~/Documents/Books"]
+//! folders = ["~/Books", "/mnt/nas/books"]
 //!
 //! [keymap.reader]
 //! next_page = ["j", "l", "space"]
@@ -11,11 +12,11 @@
 //! ```
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub library: LibraryConfig,
@@ -57,23 +58,16 @@ impl LookupConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct LibraryConfig {
-    pub folders: Vec<String>,
+    /// `None` when the file never named any, which an old library reads as
+    /// the folder it used to imply (see [`Config::adopt_old_default`]).
+    pub folders: Option<Vec<String>>,
 }
 
-impl Default for Config {
-    fn default() -> Config {
-        Config { library: LibraryConfig::default(), lookup: LookupConfig::default(), keymap: Keymap::new() }
-    }
-}
-
-impl Default for LibraryConfig {
-    fn default() -> LibraryConfig {
-        LibraryConfig { folders: vec!["~/Documents/Books".into()] }
-    }
-}
+/// Where books were read from before folders were chosen in the app.
+const OLD_DEFAULT: &str = "~/Documents/Books";
 
 impl Config {
     pub fn path() -> PathBuf {
@@ -98,9 +92,22 @@ impl Config {
         toml::from_str(text)
     }
 
-    /// The library folders, with `~` expanded.
+    /// The library folders, with `~` expanded. None until some are added.
     pub fn library_folders(&self) -> Vec<PathBuf> {
-        self.library.folders.iter().map(|f| expand(f)).collect()
+        self.library.folders.iter().flatten().map(|f| expand(f)).collect()
+    }
+
+    /// Libraries from before folders were chosen in the app read
+    /// `~/Documents/Books` without naming it. Name it, so they keep it.
+    pub fn adopt_old_default(&mut self, library_has_books: bool) {
+        if self.library.folders.is_some() || !library_has_books || !expand(OLD_DEFAULT).is_dir() {
+            return;
+        }
+        let folders = vec![expand(OLD_DEFAULT)];
+        match save_library_folders(&Config::path(), &folders) {
+            Ok(()) => self.library.folders = Some(vec![OLD_DEFAULT.into()]),
+            Err(e) => eprintln!("omaread: couldn't name {OLD_DEFAULT} in {}: {e}", Config::path().display()),
+        }
     }
 
     /// A cheap stamp of the config file, to notice edits without re-reading
@@ -109,6 +116,42 @@ impl Config {
         let meta = std::fs::metadata(Config::path()).ok()?;
         let mtime = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_nanos() as u64)?;
         Some(mtime ^ meta.len().rotate_left(17))
+    }
+}
+
+/// Write `[library] folders` into the config at `path`, leaving everything
+/// else in it (comments too) as it was. A file that doesn't parse is left
+/// alone rather than overwritten.
+pub fn save_library_folders(path: &Path, folders: &[PathBuf]) -> Result<(), String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e.to_string()),
+    };
+    let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e| format!("fix it first: {e}"))?;
+    if !doc.contains_key("library") {
+        doc["library"] = toml_edit::table();
+    }
+    let list: toml_edit::Array = folders.iter().map(|f| contract(f)).collect();
+    doc["library"]["folders"] = toml_edit::value(list);
+
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    // Write beside it and rename, so a crash can't leave half a config.
+    let tmp = path.with_extension("toml.tmp");
+    std::fs::write(&tmp, doc.to_string()).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, path).map_err(|e| e.to_string())
+}
+
+/// `~/Books` for a folder under home, so the config reads well and moves
+/// between machines.
+pub fn contract(path: &Path) -> String {
+    let home = home();
+    match path.strip_prefix(&home) {
+        Ok(rest) if !home.as_os_str().is_empty() && rest.as_os_str().is_empty() => "~".into(),
+        Ok(rest) if !home.as_os_str().is_empty() => format!("~/{}", rest.display()),
+        _ => path.display().to_string(),
     }
 }
 
@@ -129,9 +172,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_to_documents_books() {
+    fn no_folders_by_default() {
         let c = Config::parse("").unwrap();
-        assert!(c.library_folders()[0].ends_with("Documents/Books"));
+        assert!(c.library_folders().is_empty());
+        assert!(c.library.folders.is_none());
+        assert_eq!(Config::parse("[library]\nfolders = []").unwrap().library.folders, Some(vec![]));
+    }
+
+    #[test]
+    fn saving_folders_keeps_the_rest_of_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("omaread/config.toml");
+        save_library_folders(&path, &[PathBuf::from("/srv/books")]).unwrap();
+        assert_eq!(Config::parse(&std::fs::read_to_string(&path).unwrap()).unwrap().library_folders(), vec![PathBuf::from("/srv/books")]);
+
+        let text = "# mine\n[keymap.reader]\nnext_page = \"j\" # down\n\n[library]\nfolders = [\"/old\"]\n";
+        std::fs::write(&path, text).unwrap();
+        save_library_folders(&path, &[PathBuf::from("/a"), PathBuf::from("/b")]).unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(saved.contains("# mine") && saved.contains("# down"));
+        let c = Config::parse(&saved).unwrap();
+        assert_eq!(c.library_folders(), vec![PathBuf::from("/a"), PathBuf::from("/b")]);
+        assert_eq!(c.keymap["reader"]["next_page"].list(), vec!["j"]);
+
+        // A broken file is left for its owner to fix.
+        std::fs::write(&path, "[library\n").unwrap();
+        assert!(save_library_folders(&path, &[]).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[library\n");
+    }
+
+    #[test]
+    fn contracts_home() {
+        let home = home();
+        assert_eq!(contract(&home.join("Books/Rome")), "~/Books/Rome");
+        assert_eq!(contract(&home), "~");
+        assert_eq!(contract(Path::new("/srv/books")), "/srv/books");
+        assert_eq!(expand(&contract(&home.join("x"))), home.join("x"));
     }
 
     #[test]

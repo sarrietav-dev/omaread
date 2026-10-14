@@ -34,12 +34,14 @@ yay -S omaread-bin
 yay -S omaread-git
 ```
 
-Omaread reads the EPUBs under `~/Documents/Books`; each folder is a shelf.
-Other folders go in `~/.config/omaread/config.toml`:
+The library starts empty. Press `a` (or **+ Add folder**) and pick a folder:
+it shows in the sidebar as a tree of the folders inside it, and picking any
+of them shows every EPUB under it. Add as many as you like; they're saved to
+`~/.config/omaread/config.toml`, which you can also edit by hand:
 
 ```toml
 [library]
-folders = ["~/Documents/Books", "/mnt/nas/books"]
+folders = ["~/Books", "/mnt/nas/books"]
 ```
 
 ## What it does
@@ -48,7 +50,7 @@ folders = ["~/Documents/Books", "/mnt/nas/books"]
   fuzzy command palette (`:42%`, `:p 120`, `:ch 7`, `:export`). Any binding
   can be changed in `config.toml`.
 - **A library that stays out of the way.** A cover grid over your books, with
-  folders as shelves, filter and sort, and reading progress under each cover.
+  your folders as a tree in the sidebar, filter and sort, and reading progress under each cover.
 - **Made for reading.** Paginated (auto columns when wide) or scrolled,
   publisher fonts by default, with per-book overrides for theme, font, size,
   line height, justification, hyphenation, margins and width.
@@ -105,7 +107,10 @@ Library
 | Enter | open |
 | `/` | filter the whole library (Esc clears) |
 | `o` | cycle sort: recent, title, author, progress, added |
-| Tab / Shift-Tab | next / previous shelf |
+| Tab / Shift-Tab | next / previous folder in the sidebar |
+| Space | open / close the folder |
+| `a` | add a folder |
+| `D` | remove the folder from the library (the files stay) |
 | `gg` / `G` | first / last book |
 | `gr` | rescan |
 | `:` | command palette |

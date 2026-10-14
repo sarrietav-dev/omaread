@@ -163,6 +163,77 @@ pub fn scan(db: &mut Db, roots: &[PathBuf], covers: &Path) -> Result<ScanReport,
     Ok(report)
 }
 
+/// A folder in the library's rail: one the reader added (a root), or one
+/// under it that holds books.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Folder {
+    pub path: PathBuf,
+    /// 0 for a root.
+    pub depth: usize,
+    /// Books in it and in every folder under it.
+    pub count: usize,
+    pub has_children: bool,
+}
+
+/// The rail's folders, depth first, in the roots' order with subfolders by
+/// name. Every root shows, books or not. Under it, a folder holding a single
+/// book is that book's own folder (an unzipped download, a Calibre title),
+/// not a shelf, so it is left out; picking a folder shows everything under
+/// it, so that hides no books.
+pub fn folder_tree(roots: &[PathBuf], books: &[Book]) -> Vec<Folder> {
+    let mut out = Vec::new();
+    for root in roots {
+        let mut count = 0;
+        let mut counts: HashMap<&Path, usize> = HashMap::new();
+        for book in books.iter().filter(|b| b.path.starts_with(root)) {
+            count += 1;
+            let mut dir = book.path.parent();
+            while let Some(d) = dir.filter(|d| *d != root.as_path() && d.starts_with(root)) {
+                *counts.entry(d).or_default() += 1;
+                dir = d.parent();
+            }
+        }
+        let mut subfolders: Vec<(Vec<String>, &Path, usize)> = counts
+            .into_iter()
+            .filter(|(_, n)| *n >= 2)
+            .map(|(dir, n)| {
+                let key = dir.strip_prefix(root).unwrap_or(dir).components().map(|c| c.as_os_str().to_string_lossy().to_lowercase()).collect();
+                (key, dir, n)
+            })
+            .collect();
+        // By components, so every folder comes straight before what's under it.
+        subfolders.sort();
+
+        let start = out.len();
+        out.push(Folder { path: root.clone(), depth: 0, count, has_children: false });
+        for (key, dir, n) in subfolders {
+            out.push(Folder { path: dir.to_path_buf(), depth: key.len(), count: n, has_children: false });
+        }
+        for i in start..out.len() {
+            out[i].has_children = out.get(i + 1).is_some_and(|next| next.depth > out[i].depth);
+        }
+    }
+    out
+}
+
+/// What adding a folder to the library comes to.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AddFolder {
+    /// It's already read, as part of this folder.
+    Within(PathBuf),
+    /// The new list. Folders inside the new one are dropped: it covers them.
+    Folders(Vec<PathBuf>),
+}
+
+pub fn add_folder(folders: &[PathBuf], new: &Path) -> AddFolder {
+    if let Some(root) = folders.iter().find(|f| new.starts_with(f)) {
+        return AddFolder::Within(root.clone());
+    }
+    let mut out: Vec<PathBuf> = folders.iter().filter(|f| !f.starts_with(new)).cloned().collect();
+    out.push(new.to_path_buf());
+    AddFolder::Folders(out)
+}
+
 struct Found {
     path: PathBuf,
     shelf: String,
@@ -376,5 +447,68 @@ mod tests {
         let third = scan(&mut db, &[dir.path().to_path_buf()], &covers).unwrap();
         assert_eq!(third.removed, 1);
         assert!(load(&db).unwrap().is_empty());
+    }
+
+    fn book(path: &str) -> Book {
+        Book {
+            path: PathBuf::from(path),
+            identity: path.into(),
+            title: String::new(),
+            authors: Vec::new(),
+            language: None,
+            series: None,
+            series_index: None,
+            shelf: String::new(),
+            cover: None,
+            error: None,
+            added_at: 0,
+            progress: None,
+        }
+    }
+
+    #[test]
+    fn the_folder_tree_nests_shelves_under_each_root() {
+        let books: Vec<Book> = [
+            "/books/loose.epub",
+            "/books/history/rome/a.epub",
+            "/books/history/rome/b.epub",
+            "/books/history/greece.epub",
+            "/books/Go/x.epub",
+            "/books/Go/y.epub",
+            "/books/Go/Unzipped Download/z.epub",
+            "/srv/nas/a.epub",
+            "/elsewhere/c.epub",
+        ]
+        .into_iter()
+        .map(book)
+        .collect();
+        let tree = folder_tree(&[PathBuf::from("/books"), PathBuf::from("/srv/nas"), PathBuf::from("/empty")], &books);
+        let rows: Vec<(&str, usize, usize, bool)> =
+            tree.iter().map(|f| (f.path.to_str().unwrap(), f.depth, f.count, f.has_children)).collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("/books", 0, 7, true),
+                ("/books/Go", 1, 3, false),
+                ("/books/history", 1, 3, true),
+                ("/books/history/rome", 2, 2, false),
+                ("/srv/nas", 0, 1, false),
+                ("/empty", 0, 0, false),
+            ]
+        );
+    }
+
+    #[test]
+    fn adding_a_folder_respects_the_ones_already_there() {
+        let folders = vec![PathBuf::from("/books/go"), PathBuf::from("/nas")];
+        assert_eq!(add_folder(&folders, Path::new("/nas/rome")), AddFolder::Within(PathBuf::from("/nas")));
+        assert_eq!(
+            add_folder(&folders, Path::new("/books")),
+            AddFolder::Folders(vec![PathBuf::from("/nas"), PathBuf::from("/books")])
+        );
+        assert_eq!(
+            add_folder(&folders, Path::new("/srv")),
+            AddFolder::Folders(vec![PathBuf::from("/books/go"), PathBuf::from("/nas"), PathBuf::from("/srv")])
+        );
     }
 }

@@ -1,24 +1,28 @@
-//! The library: a rail of shelves and a grid of covers.
+//! The library: a rail of folders and a grid of covers.
 //!
-//! The grid is a virtualized `GridView`, so only visible covers are built and
-//! decoded. Books live in one `ListStore`; the shelf, the filter and the sort
-//! are a filter and a sorter over it.
+//! The rail lists the folders the reader added, each a collapsible tree of
+//! the folders under it that hold books; picking one shows every book under
+//! it. The grid is a virtualized `GridView`, so only visible covers are built
+//! and decoded. Books live in one `ListStore`; the shelf, the filter and the
+//! sort are a filter and a sorter over it.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use gtk::glib::BoxedAnyObject;
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
-use omaread_core::library::Book;
+use omaread_core::config::contract;
+use omaread_core::library::{self, Book, Folder};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Shelf {
     Reading,
     All,
-    Folder(String),
+    /// A folder and everything under it.
+    Folder(PathBuf),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +62,14 @@ struct State {
     sort: Sort,
     /// Rail entries in order, so Tab can step through them.
     shelves: Vec<Shelf>,
+    /// The folders the reader added.
+    roots: Vec<PathBuf>,
+    /// Every root and its folders, collapsed or not.
+    tree: Vec<Folder>,
+    /// Open folders. Roots start open, the folders under them closed.
+    expanded: HashSet<PathBuf>,
+    reading: usize,
+    total: usize,
 }
 
 pub struct LibraryView {
@@ -77,6 +89,9 @@ pub struct LibraryView {
     rebuilding: Cell<bool>,
     /// A scan is running, so an empty library may just not be read yet.
     scanning: Cell<bool>,
+    on_remove_folder: Rc<dyn Fn(PathBuf)>,
+    /// For the rail's buttons, which are rebuilt with it.
+    me: Weak<LibraryView>,
 }
 
 thread_local! {
@@ -100,12 +115,21 @@ fn book_of(obj: &glib::Object) -> std::cell::Ref<'_, Book> {
 }
 
 impl LibraryView {
-    pub fn new(on_open: impl Fn(Book) + 'static) -> Rc<LibraryView> {
+    pub fn new(
+        on_open: impl Fn(Book) + 'static,
+        on_add_folder: impl Fn() + 'static,
+        on_remove_folder: impl Fn(PathBuf) + 'static,
+    ) -> Rc<LibraryView> {
         let state = Rc::new(RefCell::new(State {
             shelf: Shelf::All,
             query: String::new(),
             sort: Sort::Recent,
             shelves: Vec::new(),
+            roots: Vec::new(),
+            tree: Vec::new(),
+            expanded: HashSet::new(),
+            reading: 0,
+            total: 0,
         }));
 
         let store = gio::ListStore::new::<BoxedAnyObject>();
@@ -190,15 +214,20 @@ impl LibraryView {
             .build();
         let rail_scroller = gtk::ScrolledWindow::builder()
             .child(&rail)
+            .vexpand(true)
             .hscrollbar_policy(gtk::PolicyType::Never)
-            .css_classes(["library-rail-scroller"])
             .build();
+        let add = gtk::Button::builder().label("+ Add folder").tooltip_text("Add a folder of EPUBs ( a )").css_classes(["library-add"]).build();
+        add.connect_clicked(move |_| on_add_folder());
+        let side = gtk::Box::builder().orientation(gtk::Orientation::Vertical).css_classes(["library-side"]).build();
+        side.append(&rail_scroller);
+        side.append(&add);
 
         let root = gtk::Box::builder().css_classes(["library"]).build();
-        root.append(&rail_scroller);
+        root.append(&side);
         root.append(&main);
 
-        let view = Rc::new(LibraryView {
+        let view = Rc::new_cyclic(|me| LibraryView {
             root,
             store,
             filter,
@@ -213,6 +242,8 @@ impl LibraryView {
             state,
             rebuilding: Cell::new(false),
             scanning: Cell::new(false),
+            on_remove_folder: Rc::new(on_remove_folder),
+            me: me.clone(),
         });
 
         view.rail.connect_row_selected({
@@ -251,7 +282,7 @@ impl LibraryView {
         if first_load && books.iter().any(Book::in_progress) {
             self.state.borrow_mut().shelf = Shelf::Reading;
         }
-        self.rebuild_rail(&books);
+        self.rebuild_tree(&books);
         self.refilter();
         if let Some(path) = selected {
             self.select_path(&path);
@@ -268,10 +299,76 @@ impl LibraryView {
             }
         }
         // Counts (Reading, above all) may have moved.
-        let books: Vec<Book> = (0..self.store.n_items()).filter_map(|i| self.store.item(i)).map(|o| book_of(&o).clone()).collect();
-        self.rebuild_rail(&books);
+        self.rebuild_tree(&self.books());
         self.refilter();
         self.sorter.changed(gtk::SorterChange::Different);
+    }
+
+    /// The folders the reader added, in the order they were added.
+    pub fn set_folders(&self, roots: Vec<PathBuf>) {
+        {
+            let mut s = self.state.borrow_mut();
+            let new: Vec<PathBuf> = roots.iter().filter(|r| !s.roots.contains(r)).cloned().collect();
+            s.expanded.extend(new);
+            s.roots = roots;
+        }
+        self.rebuild_tree(&self.books());
+        self.refilter();
+    }
+
+    /// The folder the rail is on, if it's on one.
+    pub fn current_folder(&self) -> Option<PathBuf> {
+        match &self.state.borrow().shelf {
+            Shelf::Folder(f) => Some(f.clone()),
+            _ => None,
+        }
+    }
+
+    /// Go to a folder, or to the nearest one above it that the rail shows,
+    /// opening the folders it sits in.
+    pub fn show_folder(&self, path: &Path) {
+        let target = {
+            let s = self.state.borrow();
+            s.tree.iter().filter(|f| path.starts_with(&f.path)).max_by_key(|f| f.path.components().count()).map(|f| f.path.clone())
+        };
+        let Some(target) = target else { return };
+        {
+            let mut s = self.state.borrow_mut();
+            let parents: Vec<PathBuf> = s.tree.iter().filter(|f| target.starts_with(&f.path) && f.path != target).map(|f| f.path.clone()).collect();
+            s.expanded.extend(parents);
+            s.shelf = Shelf::Folder(target);
+        }
+        self.render_rail();
+        self.refilter();
+        self.scroll_to(0);
+    }
+
+    /// Open or close the folder the rail is on.
+    pub fn toggle_folder(&self) {
+        if let Some(path) = self.current_folder() {
+            self.toggle(&path);
+        }
+    }
+
+    fn toggle(&self, path: &Path) {
+        {
+            let mut s = self.state.borrow_mut();
+            if !s.tree.iter().any(|f| f.path == path && f.has_children) {
+                return;
+            }
+            if !s.expanded.remove(path) {
+                s.expanded.insert(path.to_path_buf());
+            } else if matches!(&s.shelf, Shelf::Folder(f) if f.starts_with(path)) {
+                // Closing over the open shelf moves up to the folder closed.
+                s.shelf = Shelf::Folder(path.to_path_buf());
+            }
+        }
+        self.render_rail();
+        self.refilter();
+    }
+
+    fn books(&self) -> Vec<Book> {
+        (0..self.store.n_items()).filter_map(|i| self.store.item(i)).map(|o| book_of(&o).clone()).collect()
     }
 
     pub fn set_scanning(&self, scanning: bool) {
@@ -410,21 +507,25 @@ impl LibraryView {
     fn update_header(&self) {
         let s = self.state.borrow();
         let name = match &s.shelf {
+            _ if s.roots.is_empty() => "Library".to_string(),
             _ if !s.query.is_empty() => "Search".to_string(),
             Shelf::Reading => "Reading".to_string(),
             Shelf::All => "All books".to_string(),
-            Shelf::Folder(f) => f.clone(),
+            Shelf::Folder(f) if s.roots.contains(f) => contract(f),
+            Shelf::Folder(f) => folder_name(f),
         };
         let n = self.selection.n_items();
         let count = if n == 1 { "1 book".to_string() } else { format!("{n} books") };
         self.title.set_label(&format!("{name}  ·  {count}"));
-        self.hint.set_label(&format!("sorted by {}   / filter   o sort   tab shelves", s.sort.label()));
+        self.hint.set_label(&format!("sorted by {}   / filter   o sort   tab folders   a add folder", s.sort.label()));
 
         let total = self.store.n_items();
-        let message = if total == 0 && self.scanning.get() {
+        let message = if s.roots.is_empty() {
+            Some("No folders yet.\nPress a, or + Add folder, to pick a folder of EPUBs.\nEverything inside it shows here, folders and all.")
+        } else if total == 0 && self.scanning.get() {
             Some("Reading your library…")
         } else if total == 0 {
-            Some("No books yet.\nAdd EPUBs to ~/Documents/Books, or set [library] folders\nin ~/.config/omaread/config.toml.")
+            Some("No EPUBs in these folders yet.")
         } else if n == 0 {
             Some("Nothing matches.")
         } else {
@@ -434,45 +535,116 @@ impl LibraryView {
         self.empty.set_label(message.unwrap_or(""));
     }
 
-    fn rebuild_rail(&self, books: &[Book]) {
+    /// Count the books and lay out the folders, after the books or the
+    /// folders changed.
+    fn rebuild_tree(&self, books: &[Book]) {
+        {
+            let mut s = self.state.borrow_mut();
+            s.tree = library::folder_tree(&s.roots, books);
+            s.reading = books.iter().filter(|b| b.in_progress()).count();
+            s.total = books.len();
+        }
+        self.render_rail();
+    }
+
+    /// Rebuild the rail's rows: Reading and All books, then each root and
+    /// whatever of its tree is open.
+    fn render_rail(&self) {
         self.rebuilding.set(true);
         while let Some(row) = self.rail.row_at_index(0) {
             self.rail.remove(&row);
         }
 
-        // Every folder, with its parents, so "Business" lists all of its sub-shelves.
-        let mut counts: BTreeMap<String, usize> = BTreeMap::new();
-        for b in books.iter().filter(|b| !b.shelf.is_empty()) {
-            let parts: Vec<&str> = b.shelf.split(" / ").collect();
-            for depth in 1..=parts.len() {
-                *counts.entry(parts[..depth].join(" / ")).or_default() += 1;
+        let (rows, current) = {
+            let s = self.state.borrow();
+            let mut rows: Vec<(Shelf, gtk::ListBoxRow)> = Vec::new();
+            if !s.roots.is_empty() {
+                rows.push((Shelf::Reading, rail_row("Reading", s.reading)));
+                rows.push((Shelf::All, rail_row("All books", s.total)));
             }
-        }
-        let reading = books.iter().filter(|b| b.in_progress()).count();
+            // Below a closed folder, until the tree climbs back out of it.
+            let mut closed_at: Option<usize> = None;
+            for folder in &s.tree {
+                if closed_at.is_some_and(|depth| folder.depth > depth) {
+                    continue;
+                }
+                closed_at = None;
+                let open = s.expanded.contains(&folder.path);
+                if folder.has_children && !open {
+                    closed_at = Some(folder.depth);
+                }
+                rows.push((Shelf::Folder(folder.path.clone()), self.folder_row(folder, open)));
+            }
+            (rows, s.shelf.clone())
+        };
 
-        let mut shelves = vec![Shelf::Reading, Shelf::All];
-        self.rail.append(&rail_row("Reading", reading, 0));
-        self.rail.append(&rail_row("All books", books.len(), 0));
-        for (folder, n) in &counts {
-            let depth = folder.matches(" / ").count();
-            let name = folder.rsplit(" / ").next().unwrap_or(folder);
-            self.rail.append(&rail_row(name, *n, depth + 1));
-            shelves.push(Shelf::Folder(folder.clone()));
+        let shelves: Vec<Shelf> = rows.iter().map(|(shelf, _)| shelf.clone()).collect();
+        for (_, row) in &rows {
+            self.rail.append(row);
         }
-
-        let current = self.state.borrow().shelf.clone();
-        let current = if shelves.contains(&current) { current } else { Shelf::All };
-        let index = shelves.iter().position(|s| *s == current).unwrap_or(1);
+        let current = if shelves.contains(&current) { current } else { shelves.get(1).cloned().unwrap_or(Shelf::All) };
+        let index = shelves.iter().position(|s| *s == current);
         {
             let mut s = self.state.borrow_mut();
             s.shelves = shelves;
             s.shelf = current;
         }
-        if let Some(row) = self.rail.row_at_index(index as i32) {
+        if let Some(row) = index.and_then(|i| self.rail.row_at_index(i as i32)) {
             self.rail.select_row(Some(&row));
         }
         self.rebuilding.set(false);
     }
+
+    /// A folder's row: ▸/▾ when it has folders under it, and × to remove a root.
+    fn folder_row(&self, folder: &Folder, open: bool) -> gtk::ListBoxRow {
+        let line = gtk::Box::builder().spacing(4).margin_start((folder.depth * 14) as i32).build();
+        let fold = gtk::Button::builder().css_classes(["fold"]).can_focus(false).build();
+        if folder.has_children {
+            fold.set_label(if open { "▾" } else { "▸" });
+            fold.set_tooltip_text(Some(if open { "Close ( space )" } else { "Open ( space )" }));
+            fold.connect_clicked({
+                let view = self.me.clone();
+                let path = folder.path.clone();
+                move |_| {
+                    if let Some(view) = view.upgrade() {
+                        view.toggle(&path);
+                    }
+                }
+            });
+        } else {
+            fold.set_sensitive(false);
+        }
+        line.append(&fold);
+
+        let label = gtk::Label::builder()
+            .label(folder_name(&folder.path))
+            .xalign(0.0)
+            .hexpand(true)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .build();
+        line.append(&label);
+        let count = gtk::Label::builder().label(folder.count.to_string()).css_classes(["count"]).build();
+        line.append(&count);
+
+        let remove = remove_button();
+        line.append(&remove);
+        let row = gtk::ListBoxRow::builder().child(&line).css_classes(["shelf-row"]).build();
+        if folder.depth == 0 {
+            row.add_css_class("root");
+            row.set_tooltip_text(Some(&contract(&folder.path)));
+            remove.set_sensitive(true);
+            remove.connect_clicked({
+                let on_remove = self.on_remove_folder.clone();
+                let path = folder.path.clone();
+                move |_| on_remove(path.clone())
+            });
+        }
+        row
+    }
+}
+
+fn folder_name(path: &Path) -> String {
+    path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| contract(path))
 }
 
 fn matches(book: &Book, s: &State) -> bool {
@@ -480,7 +652,7 @@ fn matches(book: &Book, s: &State) -> bool {
     let on_shelf = !s.query.is_empty() || match &s.shelf {
         Shelf::Reading => book.in_progress(),
         Shelf::All => true,
-        Shelf::Folder(f) => book.shelf == *f || book.shelf.strip_prefix(f.as_str()).is_some_and(|rest| rest.starts_with(" / ")),
+        Shelf::Folder(f) => book.path.starts_with(f),
     };
     if !on_shelf {
         return false;
@@ -515,23 +687,27 @@ fn natural_key(title: &str) -> String {
     lower
 }
 
-fn rail_row(name: &str, count: usize, depth: usize) -> gtk::ListBoxRow {
+/// Reading and All books, above the folders.
+fn rail_row(name: &str, count: usize) -> gtk::ListBoxRow {
     let row = gtk::Box::builder().spacing(8).build();
-    let label = gtk::Label::builder()
-        .label(name)
-        .xalign(0.0)
-        .hexpand(true)
-        .ellipsize(gtk::pango::EllipsizeMode::End)
-        .margin_start((depth.saturating_sub(1) * 12) as i32)
-        .build();
+    let label = gtk::Label::builder().label(name).xalign(0.0).hexpand(true).ellipsize(gtk::pango::EllipsizeMode::End).build();
     let count = gtk::Label::builder().label(count.to_string()).css_classes(["count"]).build();
     row.append(&label);
     row.append(&count);
-    let row = gtk::ListBoxRow::builder().child(&row).css_classes(["shelf-row"]).build();
-    if depth == 0 {
-        row.add_css_class("special");
-    }
-    row
+    row.append(&remove_button());
+    gtk::ListBoxRow::builder().child(&row).css_classes(["shelf-row", "special"]).build()
+}
+
+/// × on a root's row. Every row has one, disabled and invisible on the
+/// others, so the counts line up.
+fn remove_button() -> gtk::Button {
+    gtk::Button::builder()
+        .label("×")
+        .tooltip_text("Remove from the library ( D ); the files stay")
+        .css_classes(["remove"])
+        .can_focus(false)
+        .sensitive(false)
+        .build()
 }
 
 /// One grid cell. `bind_cell` relies on this child order.

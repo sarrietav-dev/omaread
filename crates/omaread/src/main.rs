@@ -160,13 +160,21 @@ fn lookup(args: &[String]) -> glib::ExitCode {
     }
 }
 
+/// The configured folders, after naming the old default for a library
+/// built from it (else a first scan with no folders would empty it).
+fn library_folders(db: &omaread_core::db::Db) -> Vec<std::path::PathBuf> {
+    let mut config = omaread_core::config::Config::load();
+    config.adopt_old_default(db.stamps().is_ok_and(|s| !s.is_empty()));
+    config.library_folders()
+}
+
 /// `omaread import-foliate`: bring Foliate's positions, highlights and
 /// bookmarks over (again). Anything already here is kept.
 fn import_foliate() -> glib::ExitCode {
     let paths = omaread_core::library::Paths::from_env();
-    let config = omaread_core::config::Config::load();
     let result = paths.open_db().and_then(|mut db| {
-        omaread_core::library::scan(&mut db, &config.library_folders(), &paths.covers)?;
+        let folders = library_folders(&db);
+        omaread_core::library::scan(&mut db, &folders, &paths.covers)?;
         let books = omaread_core::library::load(&db)?;
         let dir = omaread_core::annotations::foliate_dir();
         omaread_core::annotations::import_foliate(&db, &dir, &books, omaread_core::library::now())
@@ -188,12 +196,12 @@ fn import_foliate() -> glib::ExitCode {
 
 /// `omaread scan`: refresh the library without opening a window.
 fn scan() -> glib::ExitCode {
-    let config = omaread_core::config::Config::load();
     let paths = omaread_core::library::Paths::from_env();
     let started = std::time::Instant::now();
-    let result = paths
-        .open_db()
-        .and_then(|mut db| omaread_core::library::scan(&mut db, &config.library_folders(), &paths.covers));
+    let result = paths.open_db().and_then(|mut db| {
+        let folders = library_folders(&db);
+        omaread_core::library::scan(&mut db, &folders, &paths.covers)
+    });
     match result {
         Ok(r) => {
             println!(
@@ -218,10 +226,10 @@ fn scan() -> glib::ExitCode {
 fn check_library() -> glib::ExitCode {
     use omaread_core::{epub, library};
 
-    let config = omaread_core::config::Config::load();
     let paths = library::Paths::from_env();
     let scanned = paths.open_db().and_then(|mut db| {
-        let report = library::scan(&mut db, &config.library_folders(), &paths.covers)?;
+        let folders = library_folders(&db);
+        let report = library::scan(&mut db, &folders, &paths.covers)?;
         Ok((report, library::load(&db)?))
     });
     let (report, books) = match scanned {
