@@ -14,7 +14,7 @@ provides=('omaread')
 conflicts=('omaread')
 options=('!debug')
 source=("$url/releases/download/v$pkgver/omaread-$pkgver-x86_64.tar.gz")
-sha256sums=('SKIP')
+sha256sums=('2218b783ec0e92538b88a46bf4426241354fbbd741483ce022d4bccba9074725')
 
 package() {
   cd "omaread-$pkgver-x86_64"
