@@ -124,8 +124,18 @@ const bookCSS = () => {
     const all = prefs.publisher === 'all'
     const imp = all ? ' !important' : ''
     const notCode = ':not(pre, pre *, code, kbd, samp, tt, var)'
+    // Our alignment and spacing are defaults the book may override, unless
+    // the reader asked for everything ("all"), where they come after its CSS.
+    const bodyRule = `
+    ${BODY_PARAGRAPH}, li, blockquote, dd {
+        line-height: ${prefs.line_height}${imp};
+        text-align: ${prefs.justify ? 'justify' : 'start'}${imp};
+        hyphens: ${prefs.hyphenate ? 'auto' : 'manual'}${imp};
+        -webkit-hyphens: ${prefs.hyphenate ? 'auto' : 'manual'}${imp};
+    }`
     return [`
     @namespace epub "http://www.idpf.org/2007/ops";
+    ${all ? '' : bodyRule}
     html {
         font-size: ${prefs.font_size}px;
         line-height: ${prefs.line_height};
@@ -152,15 +162,10 @@ const bookCSS = () => {
        past it. Headings and captions keep their relative scale. */
     ${BODY_PARAGRAPH}, li, blockquote, dd, dt, td, th { font-size: 1rem !important; }
     ` : ''}
-    ${BODY_PARAGRAPH}, li, blockquote, dd {
-        line-height: ${prefs.line_height}${imp};
-        text-align: ${prefs.justify ? 'justify' : 'start'}${imp};
-        hyphens: ${prefs.hyphenate ? 'auto' : 'manual'}${imp};
-        -webkit-hyphens: ${prefs.hyphenate ? 'auto' : 'manual'}${imp};
-    }
+    ${all ? `${bodyRule}
     p[data-omaread-display="title"], p[data-omaread-display="number"] {
         text-align: center !important;
-    }
+    }` : ''}
     ${p ? colorCSS(p, TTS_HIGHLIGHT) : ''}
 `]
 }

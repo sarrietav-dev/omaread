@@ -47,3 +47,10 @@ test('clears old broad classifications, including when a book has no TOC', () =>
     markPublisherHeadings(documentOf([p]))
     assert.equal(p['data-omaread-display'], undefined)
 })
+
+test('a contents page listing many TOC labels marks none of them as titles', () => {
+    const labels = ['One', 'Two', 'Three', 'Four']
+    const paragraphs = labels.map(l => paragraph(l))
+    markPublisherHeadings(documentOf(paragraphs), labels.map(label => ({ label })))
+    assert.deepEqual(paragraphs.map(p => p['data-omaread-display']), [undefined, undefined, undefined, undefined])
+})
