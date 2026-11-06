@@ -8,6 +8,7 @@ import { Overlayer } from '../foliate-js/overlayer.js'
 import * as CFI from '../foliate-js/epubcfi.js'
 import { BODY_PARAGRAPH, markPublisherHeadings } from './typography.js'
 import { colorCSS } from './colors.js'
+import { installSentenceSegmenter } from './sentences.js'
 
 const emit = msg => globalThis.webkit.messageHandlers.omaread.postMessage(JSON.stringify(msg))
 
@@ -41,6 +42,9 @@ const ttsHighlight = range => {
     ttsClearHighlight()
     win.CSS.highlights.set(TTS_HIGHLIGHT, new win.Highlight(range))
 }
+
+// foliate-js speaks by these sentences: see sentences.js.
+installSentenceSegmenter()
 
 const ttsInit = () => view.initTTS('sentence', ttsHighlight)
 
