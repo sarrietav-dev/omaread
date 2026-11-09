@@ -1397,7 +1397,7 @@ dependencies = [
 
 [[package]]
 name = "omaread"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "async-channel",
  "gtk4",
@@ -1413,7 +1413,7 @@ dependencies = [
 
 [[package]]
 name = "omaread-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "image",
  "quick-xml",

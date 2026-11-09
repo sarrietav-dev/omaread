@@ -233,12 +233,15 @@ impl Window {
         let help = HelpView::new();
         let (tts_tx, tts_rx) = async_channel::unbounded::<tts::Event>();
         let tts = Tts::start(tts_tx, config.tts.clone());
-        let tts_bar = SpeechPlayer::new({
-            let with_window = with_window.clone();
-            move |action| {
-                if let Some(win) = with_window() { win.on_voice_action(action); }
-            }
-        });
+        let tts_bar = SpeechPlayer::new(
+            {
+                let with_window = with_window.clone();
+                move |action| {
+                    if let Some(win) = with_window() { win.on_voice_action(action); }
+                }
+            },
+            &speed_presets(config.tts.engine),
+        );
         let lookup = LookupView::new(config.lookup.providers());
         let (lookup_tx, lookup_rx) = async_channel::unbounded::<(usize, String, Result<LookupResult, String>)>();
         let search = SearchView::new();
@@ -373,7 +376,9 @@ impl Window {
             win.speed.set(speed);
         }
         if let Some(db) = &win.db {
-            win.tts_rate.set(db.setting(TTS_RATE).ok().flatten().and_then(|r| r.parse().ok()).unwrap_or(0));
+            let (min, max) = win.rate_bounds();
+            let rate = db.setting(TTS_RATE).ok().flatten().and_then(|r| r.parse().ok()).unwrap_or(0);
+            win.tts_rate.set(rate.clamp(min, max));
             let stored = db.setting(win.voice_setting()).ok().flatten();
             let voice = stored.or_else(|| match win.tts_engine {
                 TtsEngine::Kokoro => Some(config.tts.voice.clone()).filter(|v| !v.is_empty()),
@@ -1221,7 +1226,15 @@ impl Window {
     }
 
     fn change_rate(&self, delta: i32) {
-        let rate = (self.tts_rate.get() + delta).clamp(-100, 100);
+        self.set_rate(self.tts_rate.get() + delta);
+    }
+
+    fn set_rate(&self, rate: i32) {
+        let (min, max) = self.rate_bounds();
+        let rate = rate.clamp(min, max);
+        if rate == self.tts_rate.get() {
+            return;
+        }
         self.tts_rate.set(rate);
         self.tts.send(tts::Command::Rate(rate));
         if let Some(db) = &self.db {
@@ -1233,6 +1246,19 @@ impl Window {
             self.speak_current();
         }
         self.update_tts_bar();
+    }
+
+    fn rate_bounds(&self) -> (i32, i32) {
+        match self.tts_engine {
+            // 0.5× to 4×, in 0.05× steps.
+            TtsEngine::Kokoro => (-50, 300),
+            TtsEngine::Piper => (-100, 100),
+        }
+    }
+
+    fn rate_fraction(&self) -> f64 {
+        let (min, max) = self.rate_bounds();
+        ((self.tts_rate.get() - min) as f64 / (max - min) as f64).clamp(0.0, 1.0)
     }
 
     fn next_voice(&self) {
@@ -1295,6 +1321,7 @@ impl Window {
         match action {
             VoiceAction::Pick(name) => self.set_voice(name),
             VoiceAction::Rate(delta) => self.change_rate(delta),
+            VoiceAction::SetRate(rate) => self.set_rate(rate),
             VoiceAction::Toggle => self.toggle_speech(false),
             VoiceAction::Sentence(delta) => self.step_sentence(delta),
             VoiceAction::Stop => { self.stop_speech(); self.reader.view.grab_focus(); },
@@ -1322,13 +1349,13 @@ impl Window {
             }
         };
         let speed = self.speed_label();
-        self.voice.set_state(state, sentence, self.tts_rate.get(), &speed);
+        self.voice.set_state(state, sentence, self.rate_fraction(), &speed);
     }
 
     fn speed_label(&self) -> String {
         let rate = self.tts_rate.get();
         match self.tts_engine {
-            TtsEngine::Kokoro => format!("{:.1}×", omaread_core::kokoro::speed(rate)),
+            TtsEngine::Kokoro => speed_text(omaread_core::kokoro::speed(rate)),
             TtsEngine::Piper if rate == 0 => "Normal speed".to_string(),
             TtsEngine::Piper => format!("Speed {rate:+}"),
         }
@@ -2069,15 +2096,15 @@ impl Window {
             (Context::Reader, Action::Speak) => self.toggle_speech(false),
             (Context::Reader, Action::SentenceNext) => self.step_sentence(1),
             (Context::Reader, Action::SentencePrev) => self.step_sentence(-1),
-            (Context::Reader, Action::Faster) => self.change_rate(10),
-            (Context::Reader, Action::Slower) => self.change_rate(-10),
+            (Context::Reader, Action::Faster) => self.change_rate(5),
+            (Context::Reader, Action::Slower) => self.change_rate(-5),
             (Context::Reader, Action::NextVoice) => self.next_voice(),
             (Context::Reader, Action::Voices) => self.open_voice(),
             (Context::Voice, Action::Move(_, dy)) => self.voice.move_cursor(dy),
             (Context::Voice, Action::Open) => self.pick_voice(),
             (Context::Voice, Action::NextVoice) => self.next_voice(),
-            (Context::Voice, Action::Faster) => self.change_rate(10),
-            (Context::Voice, Action::Slower) => self.change_rate(-10),
+            (Context::Voice, Action::Faster) => self.change_rate(5),
+            (Context::Voice, Action::Slower) => self.change_rate(-5),
             (Context::Voice, Action::Speak) => self.toggle_speech(false),
             (Context::Voice, Action::SentenceNext) => self.step_sentence(1),
             (Context::Voice, Action::SentencePrev) => self.step_sentence(-1),
@@ -2228,6 +2255,29 @@ impl Window {
     }
 }
 
+/// The speed menu: multipliers for Kokoro, speech-dispatcher's rate scale for
+/// Piper, where a multiplier would be a false promise.
+fn speed_presets(engine: TtsEngine) -> Vec<(&'static str, i32)> {
+    match engine {
+        TtsEngine::Kokoro => vec![
+            ("0.5×", -50),
+            ("1×", 0),
+            ("1.25×", 25),
+            ("1.5×", 50),
+            ("2×", 100),
+            ("3×", 200),
+            ("4×", 300),
+        ],
+        TtsEngine::Piper => vec![("Slowest", -100), ("Slow", -50), ("Normal", 0), ("Fast", 50), ("Fastest", 100)],
+    }
+}
+
+fn speed_text(multiplier: f32) -> String {
+    let text = format!("{multiplier:.2}");
+    let text = text.trim_end_matches('0').trim_end_matches('.');
+    format!("{text}×")
+}
+
 fn file_stem(path: &Path) -> String {
     path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
 }
@@ -2248,4 +2298,29 @@ fn status_line() -> Status {
     bar.append(&section);
     bar.append(&position);
     Status { bar, section, position }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn speed_reads_as_a_multiplier_without_trailing_zeroes() {
+        assert_eq!(speed_text(1.0), "1×");
+        assert_eq!(speed_text(1.05), "1.05×");
+        assert_eq!(speed_text(1.5), "1.5×");
+        assert_eq!(speed_text(0.5), "0.5×");
+        assert_eq!(speed_text(4.0), "4×");
+    }
+
+    #[test]
+    fn the_speed_menu_offers_the_requested_presets() {
+        let presets = speed_presets(TtsEngine::Kokoro);
+        let labels: Vec<&str> = presets.iter().map(|(label, _)| *label).collect();
+        assert_eq!(labels, ["0.5×", "1×", "1.25×", "1.5×", "2×", "3×", "4×"]);
+        for (_, rate) in presets {
+            assert!(omaread_core::kokoro::speed(rate) >= 0.5);
+            assert!(omaread_core::kokoro::speed(rate) <= 4.0);
+        }
+    }
 }

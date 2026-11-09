@@ -224,7 +224,8 @@ then press `s` in a book. One sentence is synthesized at a time, played as
 it arrives, and highlighted. The next sentence is made while the current one
 plays, and when the last sentence of a paragraph starts, the first sentence
 of the next paragraph is prepared as well. It turns pages and moves through
-chapters on its own. Voice and speed are remembered.
+chapters on its own. Voice and speed are remembered; speed changes in 0.05×
+steps, and clicking the speed value offers presets from 0.5× to 4×.
 
 The server is configurable in `~/.config/omaread/config.toml` (the engine is
 chosen when the app starts):

@@ -14,6 +14,8 @@ pub enum VoiceAction {
     Pick(String),
     /// A nudge on the reader's pace: negative is slower.
     Rate(i32),
+    /// A pace chosen from the menu.
+    SetRate(i32),
     /// Play or pause.
     Toggle,
 /// A sentence back (negative) or on.
@@ -38,13 +40,13 @@ pub struct SpeechPlayer {
     pub root: gtk::Box,
     status: gtk::Label,
     detail: gtk::Label,
-    speed: gtk::Label,
+    speed: gtk::MenuButton,
     toggle: gtk::Button,
     toggle_icon: gtk::Image,
 }
 
 impl SpeechPlayer {
-    pub fn new(on_action: impl Fn(VoiceAction) + 'static) -> Rc<Self> {
+    pub fn new(on_action: impl Fn(VoiceAction) + 'static, presets: &[(&str, i32)]) -> Rc<Self> {
         let action: Rc<dyn Fn(VoiceAction)> = Rc::new(on_action);
         let status = gtk::Label::builder()
             .label("Preparing speech…")
@@ -87,9 +89,30 @@ impl SpeechPlayer {
         let toggle = icon_button("media-playback-pause-symbolic", "Play or pause (s)", VoiceAction::Toggle);
         toggle.add_css_class("speech-primary");
         let next = icon_button("media-skip-forward-symbolic", "Next sentence (])", VoiceAction::Sentence(1));
-        let slower = text_button("−", "Slower (<)", VoiceAction::Rate(-10));
-        let speed = gtk::Label::builder().label("1.0×").css_classes(["speech-speed"]).build();
-        let faster = text_button("+", "Faster (>)", VoiceAction::Rate(10));
+        let slower = text_button("−", "Slower by 0.05× (<)", VoiceAction::Rate(-5));
+        let speed = gtk::MenuButton::builder()
+            .label("1×")
+            .tooltip_text("Speed; click for presets")
+            .css_classes(["speech-speed"])
+            .build();
+        let presets_box = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(2).build();
+        let popover = gtk::Popover::new();
+        popover.add_css_class("speech-presets");
+        for &(label, rate) in presets {
+            let preset = gtk::Button::builder().label(label).build();
+            preset.connect_clicked({
+                let action = action.clone();
+                let popover = popover.clone();
+                move |_| {
+                    action(VoiceAction::SetRate(rate));
+                    popover.popdown();
+                }
+            });
+            presets_box.append(&preset);
+        }
+        popover.set_child(Some(&presets_box));
+        speed.set_popover(Some(&popover));
+        let faster = text_button("+", "Faster by 0.05× (>)", VoiceAction::Rate(5));
         let voices = text_button("Voices", "Choose a voice (V)", VoiceAction::Voices);
         let stop = icon_button("media-playback-stop-symbolic", "Stop reading aloud (Esc)", VoiceAction::Stop);
         for button in [&back, &toggle, &next, &slower] { controls.append(button); }
@@ -190,11 +213,11 @@ impl VoicePanel {
         let rate_bar = gtk::ProgressBar::builder().show_text(false).valign(gtk::Align::Center).css_classes(["range"]).build();
         slower.connect_clicked({
             let on_action = on_action.clone();
-            move |_| on_action(VoiceAction::Rate(-10))
+            move |_| on_action(VoiceAction::Rate(-5))
         });
         faster.connect_clicked({
             let on_action = on_action.clone();
-            move |_| on_action(VoiceAction::Rate(10))
+            move |_| on_action(VoiceAction::Rate(5))
         });
 
         let heading = gtk::Label::builder().label("Available voices").xalign(0.0).css_classes(["voice-section"]).build();
@@ -294,7 +317,7 @@ impl VoicePanel {
     }
 
     /// What is playing, and how fast. `rate` is the reader's -100…100.
-    pub fn set_state(&self, state: VoiceState, sentence: Option<(usize, usize)>, rate: i32, speed_text: &str) {
+    pub fn set_state(&self, state: VoiceState, sentence: Option<(usize, usize)>, fraction: f64, speed_text: &str) {
         let place = sentence.map(|(i, n)| format!(" · sentence {} of {}", i + 1, n)).unwrap_or_default();
         let (text, class) = match state {
             VoiceState::NotReading => ("Not reading aloud".to_string(), "paused"),
@@ -312,7 +335,7 @@ impl VoicePanel {
         self.status.remove_css_class("paused");
         self.status.add_css_class(class);
         self.speed.set_label(speed_text);
-        self.rate_bar.set_fraction(((rate + 100) as f64 / 200.0).clamp(0.0, 1.0));
+        self.rate_bar.set_fraction(fraction.clamp(0.0, 1.0));
     }
 
     pub fn move_cursor(&self, delta: i32) {

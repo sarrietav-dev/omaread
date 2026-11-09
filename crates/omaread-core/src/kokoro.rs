@@ -144,9 +144,9 @@ pub fn builtin_voices() -> Vec<Voice> {
     IDS.iter().map(|id| voice_from_id(id)).collect()
 }
 
-/// The UI's -100…100 pace as a Kokoro speed multiplier.
+/// The UI's pace nudge as a Kokoro speed multiplier. A step of 5 is 0.05×.
 pub fn speed(rate: i32) -> f32 {
-    (1.0 + rate as f32 / 100.0).clamp(0.5, 2.0)
+    (1.0 + rate as f32 / 100.0).clamp(0.5, 4.0)
 }
 
 #[cfg(test)]
@@ -185,10 +185,12 @@ mod tests {
     #[test]
     fn speed_maps_the_ui_nudge() {
         assert_eq!(speed(0), 1.0);
+        assert_eq!(speed(5), 1.05);
         assert_eq!(speed(50), 1.5);
-        assert_eq!(speed(-100), 0.5);
+        assert_eq!(speed(-50), 0.5);
         assert_eq!(speed(100), 2.0);
-        assert_eq!(speed(500), 2.0);
+        assert_eq!(speed(300), 4.0);
+        assert_eq!(speed(500), 4.0);
     }
 
     /// Read one HTTP request, body included, so the test can check the JSON.

@@ -272,6 +272,48 @@ label.tts-bar {{
   font-size: {caption}px;
   padding: 0 {xs}px;
 }}
+.speech-player menubutton.speech-speed {{
+  min-height: 30px;
+  min-width: 56px;
+  padding: 0 {sm}px;
+  background-color: {normal_fill};
+  border: {hairline}px solid {accent};
+  color: {accent_text};
+}}
+/* The menu button draws the frame; its internal button must not draw another. */
+.speech-player menubutton.speech-speed > button {{
+  min-height: 0;
+  min-width: 0;
+  padding: 0;
+  background: none;
+  background-image: none;
+  border: none;
+  box-shadow: none;
+}}
+.speech-player menubutton.speech-speed:hover {{ background-color: {hover_fill}; }}
+popover.speech-presets {{
+  background: none;
+  background-color: transparent;
+  border: none;
+  box-shadow: none;
+}}
+popover.speech-presets > contents {{
+  background-color: {bg};
+  border: {hairline}px solid {accent};
+  box-shadow: none;
+  padding: {xs}px;
+}}
+.speech-presets button {{
+  min-height: 0;
+  padding: {xs}px {md}px;
+  background: none;
+  background-image: none;
+  border: none;
+  box-shadow: none;
+  color: {fg};
+  font-size: {body_small}px;
+}}
+.speech-presets button:hover {{ background-color: {hover_fill}; color: {accent_text}; }}
 .speech-player button {{
   min-height: 30px;
   min-width: 30px;
