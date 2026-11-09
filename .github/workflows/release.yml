@@ -15,7 +15,7 @@ jobs:
     container: archlinux:latest
     steps:
       - name: Install build dependencies
-        run: pacman -Syu --noconfirm --needed base-devel git rust gtk4 libadwaita webkitgtk-6.0
+        run: pacman -Syu --noconfirm --needed base-devel git rust gtk4 libadwaita webkitgtk-6.0 alsa-lib
 
       - uses: actions/checkout@v4
 
