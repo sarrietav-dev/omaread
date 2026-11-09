@@ -19,6 +19,38 @@ CLI subcommands handled in `main.rs` before GTK starts: `scan`, `status [--json]
 
 System deps (Arch): `gtk4 libadwaita webkitgtk-6.0 alsa-lib`.
 
+## CI and releases
+
+- `.github/workflows/ci.yml` runs `cargo test --locked` on `main` and pull
+  requests in an `archlinux:latest` container. It caches cargo and `target/`
+  with `Swatinem/rust-cache`, so warm runs take about a minute.
+- `.github/workflows/release.yml` runs on `v*` tags and publishes a GitHub
+  release with `omaread-<version>-x86_64.tar.gz`. It tests with
+  `cargo test --release` so the dependency graph is only compiled once, and
+  shares the same Rust cache. Include `alsa-lib` in its pacman list; the
+  audio backend links it.
+- AUR publishing is manual (the AUR SSH key lives in the 1Password agent, so
+  CI has no key to use). Cut a release in this order:
+  1. Bump `workspace.package.version` in `Cargo.toml`; run `cargo check` so
+     `Cargo.lock` follows. Commit with the feature and tag `vX.Y.Z`.
+  2. Push `main` and the tag, then wait for the Release workflow.
+  3. Download the release's `.sha256`, set `pkgver` and `sha256sums` in
+     `packaging/aur/omaread-bin/PKGBUILD`, and regenerate `.SRCINFO` with
+     `makepkg --printsrcinfo > .SRCINFO` (run it from the package directory).
+  4. Set `pkgver=r<git rev-list --count HEAD>.<short hash>` in
+     `packaging/aur/omaread-git/PKGBUILD` and regenerate its `.SRCINFO` the
+     same way.
+  5. Clone `ssh://aur@aur.archlinux.org/omaread-bin.git` and
+     `…/omaread-git.git`, copy in `PKGBUILD` and `.SRCINFO`, commit, and push
+     `master`.
+  6. Check the binary package with `makepkg --verifysource` and confirm the
+     AUR versions with the RPC endpoint.
+
+`omaread-bin` installs `/usr/bin/omaread`; `bin/omaread-install` puts a local
+build in `~/.local/bin`. If both exist, the one earlier in the launcher's
+`PATH` wins — check the running process before blaming a stale package.
+
+
 ## Architecture
 
 - **`crates/omaread-core`**: GTK-free logic, unit-tested: EPUB metadata/covers, library index + SQLite (`db`), annotations, config/keymap TOML, Omarchy theme tokens → stylesheet (`theme`, `style`), lookup providers, Kokoro HTTP client (`kokoro`), SSIP client for Piper (`ssip`), reading-speed model, fuzzy matching.
