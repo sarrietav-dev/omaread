@@ -61,7 +61,9 @@ folders = ["~/Books", "/mnt/nas/books"]
   searches of your own.
 - **Read aloud.** Kokoro by default, through a local Kokoro-FastAPI server:
   one sentence at a time with the sentence highlighted, turning pages and
-  moving through chapters on its own. Piper still works through
+  moving through chapters on its own. A compact player provides playback,
+  sentence, speed and voice controls; resuming starts the current sentence
+  again. Piper still works through
   speech-dispatcher if you set `[tts] engine = "piper"`.
 - **Follows your theme live.** Any installed Omarchy theme can be the app's,
   or one book's.
@@ -132,7 +134,7 @@ Reading
 | `:` | command palette: every command, fuzzy; also `:42%`, `:p 120`, `:ch 7`, `:export` |
 | select text | a card with colours, a note and `y` copy; `h` highlight, `1`–`5` color, `a` note, `d` dictionary, `w` Wikipedia, `t` translate |
 | click a highlight | `a` note, `1`–`5` recolor, `h` remove, `x` delete |
-| `s` | read aloud / pause (`]`/`[` next/previous sentence, `<`/`>` speed, `V` voice, Esc stop); on a selection, read from there |
+| `s` | read aloud / pause (`]`/`[` next/previous sentence, `<`/`>` speed, `V` voices, Esc stop); on a selection, read from there |
 | `m` | bookmark this page (again to remove) |
 | `A` / `'` | highlights / bookmarks (`j`/`k`, Enter go, `a` note, `dd` delete) |
 | `:export` | highlights and notes to `~/Documents/Omaread/<title>.md` (`:export json` too) |
@@ -219,8 +221,9 @@ docker run -p 8880:8880 ghcr.io/remsky/kokoro-fastapi-cpu:latest
 ```
 
 then press `s` in a book. One sentence is synthesized at a time, played as
-it arrives, and highlighted; the next one is made while the current plays,
-so it follows without a synthesis pause. It turns pages and moves through
+it arrives, and highlighted. The next sentence is made while the current one
+plays, and when the last sentence of a paragraph starts, the first sentence
+of the next paragraph is prepared as well. It turns pages and moves through
 chapters on its own. Voice and speed are remembered.
 
 The server is configurable in `~/.config/omaread/config.toml` (the engine is
@@ -243,8 +246,9 @@ before; Omaread then speaks through speech-dispatcher instead:
 engine = "piper"
 ```
 
-`V` lists the voices the active engine offers, filtered to the book's
-language.
+`V` lists every voice the active engine offers, with its language noted, so a
+book in another language can still be read with a suitable voice. The player
+shows the current sentence and speed; `Esc` stops and `s` pauses.
 
 ## On the command line
 

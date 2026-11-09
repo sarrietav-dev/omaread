@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 
 use gtk::glib::BoxedAnyObject;
+use adw::prelude::AdwApplicationWindowExt;
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
 use omaread_core::config::contract;
@@ -73,7 +74,7 @@ struct State {
 }
 
 pub struct LibraryView {
-    pub root: gtk::Box,
+    pub root: adw::OverlaySplitView,
     store: gio::ListStore,
     filter: gtk::CustomFilter,
     sorter: gtk::CustomSorter,
@@ -184,9 +185,15 @@ impl LibraryView {
 
         let title = gtk::Label::builder().xalign(0.0).hexpand(true).css_classes(["library-title"]).build();
         let hint = gtk::Label::builder().xalign(1.0).css_classes(["library-hint"]).build();
+        let search_button = gtk::Button::builder().label("Search").tooltip_text("Filter books (/)").build();
+        let sort_button = gtk::Button::builder().label("Sort").tooltip_text("Cycle sort order (o)").build();
         let header = gtk::Box::builder().spacing(12).css_classes(["library-header"]).build();
+        let sidebar_button = gtk::ToggleButton::builder().icon_name("sidebar-show-symbolic").tooltip_text("Show or hide folders").active(true).build();
+        header.append(&sidebar_button);
         header.append(&title);
         header.append(&hint);
+        header.append(&search_button);
+        header.append(&sort_button);
 
         let entry = gtk::Entry::builder()
             .placeholder_text("Filter by title or author")
@@ -202,7 +209,7 @@ impl LibraryView {
             .css_classes(["library-empty"])
             .build();
 
-        let main = gtk::Box::builder().orientation(gtk::Orientation::Vertical).hexpand(true).build();
+        let main = gtk::Box::builder().orientation(gtk::Orientation::Vertical).hexpand(true).css_classes(["library-main"]).build();
         main.append(&header);
         main.append(&entry);
         main.append(&empty);
@@ -223,9 +230,9 @@ impl LibraryView {
         side.append(&rail_scroller);
         side.append(&add);
 
-        let root = gtk::Box::builder().css_classes(["library"]).build();
-        root.append(&side);
-        root.append(&main);
+        let root = adw::OverlaySplitView::builder().sidebar(&side).content(&main).show_sidebar(true).build();
+        root.add_css_class("library");
+        sidebar_button.bind_property("active", &root, "show-sidebar").bidirectional().sync_create().build();
 
         let view = Rc::new_cyclic(|me| LibraryView {
             root,
@@ -244,6 +251,15 @@ impl LibraryView {
             scanning: Cell::new(false),
             on_remove_folder: Rc::new(on_remove_folder),
             me: me.clone(),
+        });
+
+        search_button.connect_clicked({
+            let view = Rc::downgrade(&view);
+            move |_| { if let Some(view) = view.upgrade() { view.start_filter(); } }
+        });
+        sort_button.connect_clicked({
+            let view = Rc::downgrade(&view);
+            move |_| { if let Some(view) = view.upgrade() { view.cycle_sort(); } }
         });
 
         view.rail.connect_row_selected({
@@ -374,6 +390,15 @@ impl LibraryView {
     pub fn set_scanning(&self, scanning: bool) {
         self.scanning.set(scanning);
         self.update_header();
+    }
+
+    /// Collapse folders into an overlay before they crowd out the covers.
+    pub fn install_breakpoint(&self, window: &adw::ApplicationWindow) {
+        let condition = adw::BreakpointCondition::parse("max-width: 620sp").expect("valid library breakpoint");
+        let breakpoint = adw::Breakpoint::new(condition);
+        breakpoint.add_setter(&self.root, "collapsed", Some(&true.to_value()));
+        breakpoint.add_setter(&self.root, "show-sidebar", Some(&false.to_value()));
+        window.add_breakpoint(breakpoint);
     }
 
     pub fn selected(&self) -> Option<Book> {
@@ -517,7 +542,7 @@ impl LibraryView {
         let n = self.selection.n_items();
         let count = if n == 1 { "1 book".to_string() } else { format!("{n} books") };
         self.title.set_label(&format!("{name}  ·  {count}"));
-        self.hint.set_label(&format!("sorted by {}   / filter   o sort   tab folders   a add folder", s.sort.label()));
+        self.hint.set_label(&format!("sorted by {}", s.sort.label()));
 
         let total = self.store.n_items();
         let message = if s.roots.is_empty() {
@@ -526,8 +551,12 @@ impl LibraryView {
             Some("Reading your library…")
         } else if total == 0 {
             Some("No EPUBs in these folders yet.")
+        } else if n == 0 && !s.query.is_empty() {
+            Some("No books match this search.\nPress / to edit it, then Esc to clear it.")
+        } else if n == 0 && s.shelf == Shelf::Reading {
+            Some("No books in progress.\nChoose All books to start reading.")
         } else if n == 0 {
-            Some("Nothing matches.")
+            Some("No books on this shelf.")
         } else {
             None
         };
@@ -754,10 +783,12 @@ fn book_cell() -> gtk::Box {
         .max_width_chars(1)
         .css_classes(["book-author"])
         .build();
+    let reading = gtk::Label::builder().xalign(0.0).css_classes(["book-reading"]).build();
 
     cell.append(&cover);
     cell.append(&title);
     cell.append(&author);
+    cell.append(&reading);
     cell
 }
 
@@ -765,6 +796,7 @@ fn bind_cell(cell: &gtk::Widget, book: &Book) {
     let Some(cover) = cell.first_child().and_downcast::<gtk::Overlay>() else { return };
     let Some(title) = cover.next_sibling().and_downcast::<gtk::Label>() else { return };
     let Some(author) = title.next_sibling().and_downcast::<gtk::Label>() else { return };
+    let Some(reading) = author.next_sibling().and_downcast::<gtk::Label>() else { return };
     let Some(picture) = cover.child().and_downcast::<gtk::Picture>() else { return };
     let mut overlays = picture.next_sibling();
     let placeholder = overlays.as_ref().and_then(|w| w.clone().downcast::<gtk::Label>().ok());
@@ -788,6 +820,10 @@ fn bind_cell(cell: &gtk::Widget, book: &Book) {
         None => book.authors.join(", "),
     };
     author.set_label(&byline);
+    reading.set_visible(book.progress.is_some());
+    if book.progress.is_some() {
+        reading.set_label(&format!("{:.0}% read", book.fraction() * 100.0));
+    }
     if book.error.is_some() {
         cell.add_css_class("unreadable");
     } else {

@@ -18,6 +18,9 @@ pub enum VoiceAction {
     Toggle,
 /// A sentence back (negative) or on.
     Sentence(i32),
+    Stop,
+    Voices,
+    CloseVoices,
 }
 
 /// What the panel's status line is showing.
@@ -26,13 +29,124 @@ pub enum VoiceState {
     /// Nothing is being read aloud.
     NotReading,
     Playing,
+    Preparing,
     Paused,
+}
+
+/// The compact transport stays separate from the voice chooser.
+pub struct SpeechPlayer {
+    pub root: gtk::Box,
+    status: gtk::Label,
+    detail: gtk::Label,
+    speed: gtk::Label,
+    toggle: gtk::Button,
+    toggle_icon: gtk::Image,
+}
+
+impl SpeechPlayer {
+    pub fn new(on_action: impl Fn(VoiceAction) + 'static) -> Rc<Self> {
+        let action: Rc<dyn Fn(VoiceAction)> = Rc::new(on_action);
+        let status = gtk::Label::builder()
+            .label("Preparing speech…")
+            .xalign(0.0)
+            .hexpand(true)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .css_classes(["speech-title"])
+            .build();
+        let detail = gtk::Label::builder()
+            .xalign(1.0)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .css_classes(["speech-detail"])
+            .build();
+        let info = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(12).build();
+        info.append(&status);
+        info.append(&detail);
+
+        let controls = gtk::FlowBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .column_spacing(6)
+            .row_spacing(4)
+            .min_children_per_line(3)
+            .max_children_per_line(8)
+            .halign(gtk::Align::Center)
+            .build();
+        let icon_button = |icon: &str, tip: &str, event: VoiceAction| {
+            let button = gtk::Button::builder().tooltip_text(tip).css_classes(["speech-button"]).build();
+            button.set_child(Some(&gtk::Image::from_icon_name(icon)));
+            let action = action.clone();
+            button.connect_clicked(move |_| action(event.clone()));
+            button
+        };
+        let text_button = |label: &str, tip: &str, event: VoiceAction| {
+            let button = gtk::Button::builder().label(label).tooltip_text(tip).css_classes(["speech-button"]).build();
+            let action = action.clone();
+            button.connect_clicked(move |_| action(event.clone()));
+            button
+        };
+        let back = icon_button("media-skip-backward-symbolic", "Previous sentence ([)", VoiceAction::Sentence(-1));
+        let toggle = icon_button("media-playback-pause-symbolic", "Play or pause (s)", VoiceAction::Toggle);
+        toggle.add_css_class("speech-primary");
+        let next = icon_button("media-skip-forward-symbolic", "Next sentence (])", VoiceAction::Sentence(1));
+        let slower = text_button("−", "Slower (<)", VoiceAction::Rate(-10));
+        let speed = gtk::Label::builder().label("1.0×").css_classes(["speech-speed"]).build();
+        let faster = text_button("+", "Faster (>)", VoiceAction::Rate(10));
+        let voices = text_button("Voices", "Choose a voice (V)", VoiceAction::Voices);
+        let stop = icon_button("media-playback-stop-symbolic", "Stop reading aloud (Esc)", VoiceAction::Stop);
+        for button in [&back, &toggle, &next, &slower] { controls.append(button); }
+        controls.append(&speed);
+        for button in [&faster, &voices, &stop] { controls.append(button); }
+
+        let panel = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(6)
+            .halign(gtk::Align::Center)
+            .css_classes(["speech-panel"])
+            .build();
+        panel.append(&info);
+        panel.append(&controls);
+        let root = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .halign(gtk::Align::Fill)
+            .visible(false)
+            .css_classes(["speech-player"])
+            .build();
+        root.append(&panel);
+        let toggle_icon = toggle.child().and_downcast::<gtk::Image>().expect("the transport icon");
+        Rc::new(Self { root, status, detail, speed, toggle, toggle_icon })
+    }
+
+    pub fn set_state(&self, state: VoiceState, voice: &str, speed: &str, place: Option<(usize, usize)>, error: Option<&str>) {
+        let sentence = place.map(|(i, n)| format!(" · sentence {} of {}", i + 1, n)).unwrap_or_default();
+        self.status.set_label(error.unwrap_or(&match state {
+            VoiceState::NotReading => "Not reading aloud".to_string(),
+            VoiceState::Preparing => "Preparing speech…".to_string(),
+            VoiceState::Playing => format!("Reading aloud{sentence}"),
+            VoiceState::Paused => format!("Paused{sentence}"),
+        }));
+        let playing = matches!(state, VoiceState::Playing | VoiceState::Preparing);
+        if let Some(error) = error {
+            let retry = gtk::Label::new(Some("Retry"));
+            self.toggle.set_child(Some(&retry));
+            self.toggle.set_tooltip_text(Some(error));
+        } else {
+            self.toggle_icon.set_icon_name(Some(if playing {
+                "media-playback-pause-symbolic"
+            } else {
+                "media-playback-start-symbolic"
+            }));
+            self.toggle.set_child(Some(&self.toggle_icon));
+            self.toggle.set_tooltip_text(Some(if playing { "Pause (s)" } else { "Resume from this sentence (s)" }));
+        }
+        self.speed.set_label(speed);
+        let resume = if state == VoiceState::Paused && error.is_none() { " · resumes this sentence" } else { "" };
+        self.detail.set_label(&format!("{voice}{resume}"));
+    }
 }
 
 pub struct VoicePanel {
     pub root: gtk::Box,
     status: gtk::Label,
-    toggle: gtk::Button,
+    play: gtk::Button,
     speed: gtk::Label,
     rate_bar: gtk::ProgressBar,
     list: gtk::ListBox,
@@ -47,29 +161,22 @@ impl VoicePanel {
     pub fn new(on_action: impl Fn(VoiceAction) + 'static) -> Rc<VoicePanel> {
         let on_action: Rc<dyn Fn(VoiceAction)> = Rc::new(on_action);
 
-        let title = gtk::Label::builder().label("Reading aloud").xalign(0.0).hexpand(true).css_classes(["title"]).build();
-        let status = gtk::Label::builder().xalign(0.0).css_classes(["voice-status"]).build();
-
-        // Play/pause and a sentence either way, for the mouse.
-        let back = gtk::Button::builder().label("‹ sentence").tooltip_text("previous sentence ( [ )").css_classes(["action"]).build();
-        let toggle = gtk::Button::builder().label("Play").css_classes(["action"]).build();
-        let on = gtk::Button::builder().label("sentence ›").tooltip_text("next sentence ( ] )").css_classes(["action"]).build();
-        let transport = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(6).build();
-        transport.append(&back);
-        transport.append(&toggle);
-        transport.append(&on);
-        back.connect_clicked({
+        let title = gtk::Label::builder().label("Voices").xalign(0.0).hexpand(true).css_classes(["title"]).build();
+        let close = gtk::Button::builder().label("×").tooltip_text("Close voices (Esc)").build();
+        close.connect_clicked({
             let on_action = on_action.clone();
-            move |_| on_action(VoiceAction::Sentence(-1))
+            move |_| on_action(VoiceAction::CloseVoices)
         });
-        toggle.connect_clicked({
+        let play = gtk::Button::builder().label("Read aloud").tooltip_text("Start, pause or resume (s)").build();
+        play.connect_clicked({
             let on_action = on_action.clone();
             move |_| on_action(VoiceAction::Toggle)
         });
-        on.connect_clicked({
-            let on_action = on_action.clone();
-            move |_| on_action(VoiceAction::Sentence(1))
-        });
+        let head = gtk::Box::builder().spacing(8).build();
+        head.append(&title);
+        head.append(&play);
+        head.append(&close);
+        let status = gtk::Label::builder().xalign(0.0).css_classes(["voice-status"]).build();
 
         let slower = gtk::Button::builder().label("−").tooltip_text("slower ( < )").build();
         let faster = gtk::Button::builder().label("+").tooltip_text("faster ( > )").build();
@@ -90,7 +197,7 @@ impl VoicePanel {
             move |_| on_action(VoiceAction::Rate(10))
         });
 
-        let heading = gtk::Label::builder().label("Voices").xalign(0.0).css_classes(["voice-section"]).build();
+        let heading = gtk::Label::builder().label("Available voices").xalign(0.0).css_classes(["voice-section"]).build();
         let list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::Single).css_classes(["voice-list"]).build();
         let scroller = gtk::ScrolledWindow::builder()
             .child(&list)
@@ -99,7 +206,7 @@ impl VoicePanel {
             .max_content_height(300)
             .build();
         let empty = gtk::Label::builder()
-            .label("No voices found. Is the TTS engine running?")
+            .label("Loading voices…")
             .xalign(0.0)
             .wrap(true)
             .css_classes(["caption"])
@@ -119,9 +226,8 @@ impl VoicePanel {
             .visible(false)
             .css_classes(["card", "side-panel", "voice-panel"])
             .build();
-        root.append(&title);
+        root.append(&head);
         root.append(&status);
-        root.append(&transport);
         root.append(&speed_head);
         root.append(&rate_bar);
         root.append(&heading);
@@ -132,7 +238,7 @@ impl VoicePanel {
         Rc::new(VoicePanel {
             root,
             status,
-            toggle,
+            play,
             speed,
             rate_bar,
             list,
@@ -163,6 +269,9 @@ impl VoicePanel {
 
     /// Replace the list when the voices or the current one changed.
     pub fn set_voices(&self, voices: &[Voice], current: Option<&str>) {
+        if voices.is_empty() {
+            self.empty.set_label("No voices available. Check your speech engine and try again.");
+        }
         if *self.voices.borrow() == voices && self.current.borrow().as_deref() == current {
             return;
         }
@@ -185,23 +294,24 @@ impl VoicePanel {
     }
 
     /// What is playing, and how fast. `rate` is the reader's -100…100.
-    pub fn set_state(&self, state: VoiceState, sentence: Option<(usize, usize)>, rate: i32) {
+    pub fn set_state(&self, state: VoiceState, sentence: Option<(usize, usize)>, rate: i32, speed_text: &str) {
         let place = sentence.map(|(i, n)| format!(" · sentence {} of {}", i + 1, n)).unwrap_or_default();
         let (text, class) = match state {
             VoiceState::NotReading => ("Not reading aloud".to_string(), "paused"),
             VoiceState::Playing => (format!("Reading aloud{place}"), "playing"),
+            VoiceState::Preparing => ("Preparing speech…".to_string(), "paused"),
             VoiceState::Paused => (format!("Paused{place}"), "paused"),
         };
         self.status.set_label(&text);
+        self.play.set_label(match state {
+            VoiceState::Playing | VoiceState::Preparing => "Pause",
+            VoiceState::Paused => "Resume",
+            VoiceState::NotReading => "Read aloud",
+        });
         self.status.remove_css_class("playing");
         self.status.remove_css_class("paused");
         self.status.add_css_class(class);
-        self.toggle.set_label(match state {
-            VoiceState::NotReading => "Play",
-            VoiceState::Playing => "Pause",
-            VoiceState::Paused => "Resume",
-        });
-        self.speed.set_label(&rate_label(rate));
+        self.speed.set_label(speed_text);
         self.rate_bar.set_fraction(((rate + 100) as f64 / 200.0).clamp(0.0, 1.0));
     }
 
@@ -269,6 +379,7 @@ fn annotation(voice: &Voice) -> String {
     }
 }
 
+#[cfg(test)]
 fn rate_label(rate: i32) -> String {
     if rate == 0 { "normal".into() } else { format!("{rate:+}") }
 }

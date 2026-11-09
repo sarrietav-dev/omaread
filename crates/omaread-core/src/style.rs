@@ -123,6 +123,7 @@ window.omaread * {{ border-radius: 0; }}
   margin: {lg}px;
   margin-bottom: {panel_bottom}px;
 }}
+.narrow .side-panel, .narrow .annotations-panel {{ min-width: 0; }}
 list.settings-list {{ background: none; font-size: {body_small}px; }}
 list.settings-list > row {{
   padding: {xs}px {sm}px;
@@ -256,6 +257,39 @@ label.tts-bar {{
   margin-bottom: {panel_bottom}px;
   font-size: {caption}px;
 }}
+.speech-player {{
+  background-color: {bg};
+  border-top: {hairline}px solid {rule};
+  padding: {md}px {row_x}px;
+}}
+.speech-panel {{ min-width: 0; }}
+.speech-title {{ color: {fg}; font-size: {body_small}px; }}
+.speech-detail {{ color: {muted}; font-size: {caption}px; }}
+.speech-speed {{
+  min-width: 42px;
+  color: {accent_text};
+  font-feature-settings: "tnum";
+  font-size: {caption}px;
+  padding: 0 {xs}px;
+}}
+.speech-player button {{
+  min-height: 30px;
+  min-width: 30px;
+  padding: 0 {sm}px;
+  background-image: none;
+  background-color: {normal_fill};
+  border: {hairline}px solid {rule};
+  box-shadow: none;
+  color: {fg};
+}}
+.speech-player button image {{ -gtk-icon-size: 16px; }}
+.speech-player button:hover {{ background-color: {hover_fill}; border-color: {hover_border}; }}
+.speech-player button:focus-visible {{ outline: {hairline}px solid {accent}; outline-offset: 2px; }}
+.speech-player button.speech-primary {{
+  color: {accent_text};
+  border-color: {accent};
+  background-color: {selected_fill};
+}}
 .voice-panel {{ min-width: {panel_w}px; }}
 .voice-status {{ font-size: {body_small}px; color: {fg}; }}
 .voice-status.playing {{ color: {accent_text}; }}
@@ -315,7 +349,6 @@ list.search-list > row:selected {{ background-color: {selected_fill}; }}
 list.search-list > row:selected b {{ color: {accent_text}; }}
 
 /* The `?` help */
-.help {{ min-width: {help_w}px; }}
 .help .heading {{
   font-size: {body_small}px;
   font-weight: bold;
@@ -330,6 +363,7 @@ list.search-list > row:selected b {{ color: {accent_text}; }}
 .help .what {{ color: {fg}; }}
 
 /* Library */
+.library, .library-main, .library-side {{ background-color: {bg}; color: {fg}; }}
 .library-side {{
   min-width: {rail}px;
   border-right: {hairline}px solid {rule};
@@ -386,8 +420,19 @@ button.library-add:hover {{ color: {accent_text}; border-color: {accent}; backgr
   border-bottom: {hairline}px solid {rule};
   font-size: {body_small}px;
 }}
-.library-title {{ color: {fg}; }}
+.library-title {{ color: {fg}; font-size: {title}px; font-weight: bold; }}
 .library-hint {{ color: {muted}; font-size: {caption}px; }}
+.library-header button {{
+  padding: {xs}px {md}px;
+  min-height: 28px;
+  background-image: none;
+  background-color: {normal_fill};
+  border: {hairline}px solid {rule};
+  box-shadow: none;
+  color: {fg};
+}}
+.library-header button:hover {{ background-color: {hover_fill}; border-color: {hover_border}; }}
+.library-header button:focus-visible {{ outline: {hairline}px solid {accent}; outline-offset: 2px; }}
 .library-filter {{
   margin: {md}px {row_x}px 0;
   padding: {xs}px {md}px;
@@ -418,8 +463,9 @@ gridview.library-grid > child:selected {{
   color: {muted};
   padding: {lg}px;
 }}
-.book .book-title {{ font-size: {body_small}px; color: {fg}; }}
+.book .book-title {{ font-size: {body_small}px; color: {fg}; font-weight: bold; }}
 .book .book-author {{ font-size: {caption}px; color: {muted}; }}
+.book .book-reading {{ font-size: {caption}px; color: {accent_text}; font-feature-settings: "tnum"; }}
 .book.unreadable .book-author {{ color: {urgent}; }}
 .book.unreadable .cover {{ opacity: 0.5; }}
 progressbar.book-progress > trough {{
@@ -449,7 +495,6 @@ progressbar.book-progress > trough > progress {{
         hl_magenta = t.highlights[4],
         panel_bottom = t.space(40.0),
         progress = t.space(3.0).max(2),
-        help_w = t.space(640.0),
         help_key = t.space(132.0),
         accent_text = t.accent.lifted(bg, fg, 4.5),
         urgent = t.urgent,

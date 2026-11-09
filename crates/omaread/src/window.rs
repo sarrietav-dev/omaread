@@ -30,7 +30,7 @@ use crate::service::Service;
 use crate::settings_view::{Scope, SettingsView};
 use crate::toc_view::{TocItem, TocView};
 use crate::theming::Theming;
-use crate::voice_view::{VoiceAction, VoicePanel, VoiceState};
+use crate::voice_view::{SpeechPlayer, VoiceAction, VoicePanel, VoiceState};
 
 const LIBRARY: &str = "library";
 const READER: &str = "reader";
@@ -65,11 +65,14 @@ pub struct Window {
     /// Which engine is speaking, chosen by `[tts] engine`.
     tts_engine: TtsEngine,
     speech: RefCell<Option<Speech>>,
-    tts_bar: gtk::Label,
+    speech_error: RefCell<Option<String>>,
+    tts_bar: Rc<SpeechPlayer>,
+    speech_seq: Cell<u64>,
     /// The voice panel: the list of voices and the pace.
     voice: Rc<VoicePanel>,
     /// Voices for the book's language, from the active engine.
     voices: RefCell<Vec<omaread_core::voice::Voice>>,
+    voices_loaded: Cell<bool>,
     tts_rate: Cell<i32>,
     tts_voice: RefCell<Option<String>>,
     lookup: Rc<LookupView>,
@@ -119,9 +122,15 @@ enum Focus {
 
 /// Reading aloud: the block being read, and where in it.
 struct Speech {
+    session: u64,
     playing: bool,
+    started: bool,
     sentences: Vec<Sentence>,
     index: usize,
+    /// The next block, asked for when this one's last sentence starts, so
+    /// its first sentence can be synthesized during that sentence.
+    ahead: Vec<Sentence>,
+    peeked: bool,
     /// The sentence the engine is reading (our number for it).
     seq: u64,
 }
@@ -207,6 +216,7 @@ impl Window {
                 }
             },
         );
+        library.install_breakpoint(&window);
 
         let status = status_line();
         let toc = TocView::new({
@@ -223,12 +233,12 @@ impl Window {
         let help = HelpView::new();
         let (tts_tx, tts_rx) = async_channel::unbounded::<tts::Event>();
         let tts = Tts::start(tts_tx, config.tts.clone());
-        let tts_bar = gtk::Label::builder()
-            .halign(gtk::Align::Center)
-            .valign(gtk::Align::End)
-            .visible(false)
-            .css_classes(["tts-bar"])
-            .build();
+        let tts_bar = SpeechPlayer::new({
+            let with_window = with_window.clone();
+            move |action| {
+                if let Some(win) = with_window() { win.on_voice_action(action); }
+            }
+        });
         let lookup = LookupView::new(config.lookup.providers());
         let (lookup_tx, lookup_rx) = async_channel::unbounded::<(usize, String, Result<LookupResult, String>)>();
         let search = SearchView::new();
@@ -248,13 +258,17 @@ impl Window {
                 }
             }
         });
+        // The player and status line share the bottom of the window with the
+        // page rather than floating over the words being read.
+        let reader_page = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        reader_page.append(&reader.view);
+        reader_page.append(&tts_bar.root);
+        reader_page.append(&status.bar);
         let reader_overlay = gtk::Overlay::new();
-        reader_overlay.set_child(Some(&reader.view));
-        reader_overlay.add_overlay(&status.bar);
+        reader_overlay.set_child(Some(&reader_page));
         reader_overlay.add_overlay(&toc.root);
         reader_overlay.add_overlay(&search.root);
         reader_overlay.add_overlay(&lookup.root);
-        reader_overlay.add_overlay(&tts_bar);
         reader_overlay.add_overlay(&voice.root);
         reader_overlay.add_overlay(&settings.root);
         let selection_bar = SelectionBar::new({
@@ -312,8 +326,11 @@ impl Window {
             tts_engine: config.tts.engine,
             speech: RefCell::default(),
             tts_bar,
+            speech_seq: Cell::new(0),
+            speech_error: RefCell::new(None),
             voice,
             voices: RefCell::default(),
+            voices_loaded: Cell::new(false),
             tts_rate: Cell::new(0),
             tts_voice: RefCell::new(match config.tts.engine {
                 TtsEngine::Kokoro => Some(config.tts.voice.clone()).filter(|v| !v.is_empty()),
@@ -438,6 +455,15 @@ impl Window {
                 glib::Propagation::Proceed
             }
         });
+        win.fit_panels(win.window.width());
+        win.window.connect_notify_local(Some("width"), {
+            let win = Rc::downgrade(&win);
+            move |window, _| {
+                if let Some(win) = win.upgrade() {
+                    win.fit_panels(window.width());
+                }
+            }
+        });
         // `this` holds the window for the callbacks; let it go with the window.
         win.window.connect_destroy(move |_| {
             this.borrow_mut().take();
@@ -454,6 +480,25 @@ impl Window {
         });
         win.library.focus();
         win
+    }
+
+    /// Keep overlays inside a tiled or narrow window instead of letting a
+    /// fixed width push them off the edge.
+    fn fit_panels(&self, width: i32) {
+        let narrow = width < 620;
+        if narrow {
+            self.window.add_css_class("narrow");
+        } else {
+            self.window.remove_css_class("narrow");
+        }
+        let cap = (width - 32).max(240);
+        self.palette.root.set_width_request(cap.min(560));
+        self.lookup.root.set_width_request(cap.min(460));
+        self.annotations_panel.root.set_width_request(cap.min(520));
+        self.voice.root.set_width_request(cap.min(420));
+        self.settings.root.set_width_request(cap.min(400));
+        self.toc.root.set_width_request(cap.min(400));
+        self.search.root.set_width_request(cap.min(400));
     }
 
     /// Open a file given on the command line or by another app.
@@ -620,11 +665,15 @@ impl Window {
                 }
             }
             Event::Located { items } => self.place_annotations(items),
-            Event::TtsBlock { sentences } => {
+            Event::TtsBlock { session, sentences } => {
                 let mut speech = self.speech.borrow_mut();
-                if let Some(s) = speech.as_mut() {
+                if let Some(s) = speech.as_mut().filter(|s| s.session == session) {
                     s.sentences = sentences;
                     s.index = 0;
+                    s.ahead.clear();
+                    s.peeked = false;
+                } else {
+                    return;
                 }
                 let playing = speech.as_ref().is_some_and(|s| s.playing);
                 drop(speech);
@@ -632,7 +681,24 @@ impl Window {
                     self.speak_current();
                 }
             }
-            Event::TtsEnd => {
+            Event::TtsAhead { session, sentences } => {
+                let preload = {
+                    let mut speech = self.speech.borrow_mut();
+                    let Some(s) = speech.as_mut().filter(|s| s.session == session && s.peeked) else {
+                        return;
+                    };
+                    s.peeked = false;
+                    s.ahead = sentences;
+                    s.ahead.first().map(|sentence| sentence.text.clone())
+                };
+                // The last sentence is still playing; make the next block's
+                // first sentence ready before it ends.
+                if let Some(text) = preload {
+                    self.tts.send(tts::Command::Preload { text });
+                }
+            }
+            Event::TtsEnd { session } => {
+                if !self.speech.borrow().as_ref().is_some_and(|s| s.session == session) { return; }
                 self.stop_speech();
                 self.show_toast("Finished reading aloud", false);
             }
@@ -847,7 +913,7 @@ impl Window {
     }
 
     fn open_help(&self) {
-        self.help.open();
+        self.help.open(self.context(), &self.keymap.borrow());
     }
 
     fn close_help(&self) {
@@ -936,27 +1002,57 @@ impl Window {
 
     fn on_tts(&self, event: tts::Event) {
         match event {
+            tts::Event::Started(seq) => {
+                if let Some(s) = self.speech.borrow_mut().as_mut().filter(|s| s.playing && s.seq == seq) {
+                    s.started = true;
+                }
+                self.update_tts_bar();
+            }
+            tts::Event::SpeechError(seq, error) => {
+                let current = self.speech.borrow().as_ref().is_some_and(|s| s.playing && s.seq == seq);
+                if current {
+                    if let Some(s) = self.speech.borrow_mut().as_mut() {
+                        s.playing = false;
+                        s.started = false;
+                    }
+                    self.speech_error.replace(Some(error));
+                    self.update_tts_bar();
+                }
+            }
             tts::Event::Ended(seq) => {
+                enum Next {
+                    Sentence,
+                    /// The block after this one was already fetched.
+                    Ahead,
+                    Page,
+                }
                 let next = {
                     let mut speech = self.speech.borrow_mut();
                     let Some(s) = speech.as_mut().filter(|s| s.playing && s.seq == seq) else { return };
-                    s.index += 1;
-                    s.index < s.sentences.len()
+                    if s.index + 1 < s.sentences.len() {
+                        s.index += 1;
+                        Next::Sentence
+                    } else if !s.ahead.is_empty() {
+                        s.sentences = std::mem::take(&mut s.ahead);
+                        s.index = 0;
+                        s.peeked = false;
+                        Next::Ahead
+                    } else {
+                        Next::Page
+                    }
                 };
-                if next {
-                    self.speak_current();
-                } else {
-                    self.reader.call("ttsNext", "");
+                match next {
+                    Next::Sentence => self.speak_current(),
+                    Next::Ahead => {
+                        self.reader.call("ttsConsumeAhead", "");
+                        self.speak_current();
+                    }
+                    Next::Page => self.reader.call("ttsNext", ""),
                 }
             }
             tts::Event::Voices(all) => {
-                let lang = self.current.borrow().as_ref().and_then(|c| c.book.language.clone()).unwrap_or_default();
-                let lang = lang.split(['-', '_']).next().unwrap_or("").to_lowercase();
-                let mut voices: Vec<_> = all.iter().filter(|v| !lang.is_empty() && v.language.to_lowercase().starts_with(&lang)).cloned().collect();
-                if voices.is_empty() {
-                    voices = all;
-                }
-                self.voices.replace(voices);
+                self.voices_loaded.set(true);
+                self.voices.replace(all);
                 self.update_tts_bar();
             }
             tts::Event::Error(e) => {
@@ -973,18 +1069,19 @@ impl Window {
             Some(true) if !from_selection => {
                 if let Some(s) = self.speech.borrow_mut().as_mut() {
                     s.playing = false;
-                    s.seq += 1;
+                    s.started = false;
+                    s.seq = self.next_speech_seq();
                 }
                 self.tts.send(tts::Command::Stop);
-                self.open_voice();
                 self.update_tts_bar();
             }
             Some(false) if !from_selection => {
+                self.speech_error.take();
                 if let Some(s) = self.speech.borrow_mut().as_mut() {
                     s.playing = true;
                 }
-                self.open_voice();
                 self.speak_current();
+                self.update_tts_bar();
             }
             Some(_) => {
                 self.tts.send(tts::Command::Stop);
@@ -994,6 +1091,7 @@ impl Window {
     }
 
     fn start_speech(&self, from_selection: bool) {
+        self.speech_error.take();
         let lang = self.current.borrow().as_ref().and_then(|c| c.book.language.clone());
         if let Some(lang) = lang {
             self.tts.send(tts::Command::Language(lang));
@@ -1005,28 +1103,43 @@ impl Window {
         if self.voices.borrow().is_empty() {
             self.tts.send(tts::Command::ListVoices);
         }
-        let seq = self.speech.borrow().as_ref().map(|s| s.seq + 1).unwrap_or(1);
-        self.speech.replace(Some(Speech { playing: true, sentences: Vec::new(), index: 0, seq }));
+        let seq = self.next_speech_seq();
+        self.speech.replace(Some(Speech {
+            session: seq,
+            playing: true,
+            started: false,
+            sentences: Vec::new(),
+            index: 0,
+            ahead: Vec::new(),
+            peeked: false,
+            seq,
+        }));
         self.close_selection();
-        self.reader.call("ttsStart", &serde_json::json!({ "fromSelection": from_selection }).to_string());
-        // Reading aloud opens the controls: voice and pace are right there.
-        self.open_voice();
+        self.reader.call("ttsStart", &serde_json::json!({ "fromSelection": from_selection, "session": seq }).to_string());
         self.update_tts_bar();
+    }
+
+    fn next_speech_seq(&self) -> u64 {
+        let next = self.speech_seq.get().wrapping_add(1);
+        self.speech_seq.set(next);
+        next
     }
 
     /// Mark the current sentence on the page and send it to be spoken.
     fn speak_current(&self) {
-        let (mark, text, seq, next) = {
+        let (mark, text, seq, next, peek) = {
             let mut speech = self.speech.borrow_mut();
             let Some(s) = speech.as_mut() else { return };
             let Some(sentence) = s.sentences.get(s.index) else { return };
-            s.seq += 1;
-            (
-                sentence.mark.clone(),
-                sentence.text.clone(),
-                s.seq,
-                s.sentences.get(s.index + 1).map(|sentence| sentence.text.clone()),
-            )
+            s.seq = self.next_speech_seq();
+            s.started = false;
+            let end = s.index + 1 >= s.sentences.len();
+            let peek = end && !s.peeked;
+            if peek {
+                s.peeked = true;
+            }
+            let next = s.sentences.get(s.index + 1).map(|sentence| sentence.text.clone());
+            (sentence.mark.clone(), sentence.text.clone(), s.seq, next, peek)
         };
         self.reader.call("ttsMark", &serde_json::to_string(&mark).unwrap_or_default());
         self.tts.send(tts::Command::Speak { seq, text });
@@ -1036,6 +1149,11 @@ impl Window {
             && let Some(text) = next
         {
             self.tts.send(tts::Command::Preload { text });
+        }
+        // The last sentence of a block is the moment to fetch the next one,
+        // so its first sentence is ready when this one ends.
+        if peek {
+            self.reader.call("ttsPeek", "");
         }
         self.update_tts_bar();
     }
@@ -1052,12 +1170,37 @@ impl Window {
             return;
         }
         if target as usize >= len {
-            self.reader.call("ttsNext", "");
+            let ahead = {
+                let mut speech = self.speech.borrow_mut();
+                match speech.as_mut() {
+                    Some(s) if !s.ahead.is_empty() => {
+                        s.sentences = std::mem::take(&mut s.ahead);
+                        s.index = 0;
+                        s.peeked = false;
+                        s.seq = self.next_speech_seq();
+                        s.started = false;
+                        true
+                    }
+                    _ => false,
+                }
+            };
+            if ahead {
+                self.reader.call("ttsConsumeAhead", "");
+                if playing {
+                    self.speak_current();
+                } else {
+                    let mark = self.speech.borrow().as_ref().and_then(|s| s.sentences.get(0).and_then(|x| x.mark.clone()));
+                    self.reader.call("ttsMark", &serde_json::to_string(&mark).unwrap_or_default());
+                }
+            } else {
+                self.reader.call("ttsNext", "");
+            }
             return;
         }
         if let Some(s) = self.speech.borrow_mut().as_mut() {
             s.index = target as usize;
-            s.seq += 1;
+            s.seq = self.next_speech_seq();
+            s.started = false;
         }
         if playing {
             self.speak_current();
@@ -1068,11 +1211,12 @@ impl Window {
     }
 
     fn stop_speech(&self) {
+        self.speech_error.take();
         if self.speech.take().is_some() {
             self.tts.send(tts::Command::Stop);
             self.reader.call("ttsStop", "");
         }
-        self.tts_bar.set_visible(false);
+        self.tts_bar.root.set_visible(false);
         self.refresh_voice_panel();
     }
 
@@ -1092,7 +1236,6 @@ impl Window {
     }
 
     fn next_voice(&self) {
-        eprintln!("omaread: DEBUG next_voice n={}", self.voices.borrow().len());
         let voices = self.voices.borrow().clone();
         if voices.is_empty() {
             self.tts.send(tts::Command::ListVoices);
@@ -1129,7 +1272,6 @@ impl Window {
     // --- The voice panel ----------------------------------------------------
 
     fn open_voice(&self) {
-        eprintln!("omaread: DEBUG open_voice (was_open={})", self.voice.is_open());
         self.toc.close();
         self.search.close();
         self.annotations_panel.close();
@@ -1155,6 +1297,9 @@ impl Window {
             VoiceAction::Rate(delta) => self.change_rate(delta),
             VoiceAction::Toggle => self.toggle_speech(false),
             VoiceAction::Sentence(delta) => self.step_sentence(delta),
+            VoiceAction::Stop => { self.stop_speech(); self.reader.view.grab_focus(); },
+            VoiceAction::Voices => self.open_voice(),
+            VoiceAction::CloseVoices => { self.voice.close(); self.update_tts_bar(); self.reader.view.grab_focus(); },
         }
     }
 
@@ -1165,23 +1310,35 @@ impl Window {
         }
         let voices = self.voices.borrow().clone();
         let current = self.tts_voice.borrow().clone();
-        self.voice.set_voices(&voices, current.as_deref());
+        if self.voices_loaded.get() {
+            self.voice.set_voices(&voices, current.as_deref());
+        }
         let (state, sentence) = match self.speech.borrow().as_ref() {
             None => (VoiceState::NotReading, None),
             Some(s) => {
                 let sentence = (!s.sentences.is_empty()).then(|| (s.index, s.sentences.len()));
-                let state = if s.playing { VoiceState::Playing } else { VoiceState::Paused };
+                let state = if !s.playing { VoiceState::Paused } else if s.started { VoiceState::Playing } else { VoiceState::Preparing };
                 (state, sentence)
             }
         };
-        self.voice.set_state(state, sentence, self.tts_rate.get());
+        let speed = self.speed_label();
+        self.voice.set_state(state, sentence, self.tts_rate.get(), &speed);
+    }
+
+    fn speed_label(&self) -> String {
+        let rate = self.tts_rate.get();
+        match self.tts_engine {
+            TtsEngine::Kokoro => format!("{:.1}×", omaread_core::kokoro::speed(rate)),
+            TtsEngine::Piper if rate == 0 => "Normal speed".to_string(),
+            TtsEngine::Piper => format!("Speed {rate:+}"),
+        }
     }
 
     fn update_tts_bar(&self) {
         self.refresh_voice_panel();
         let speech = self.speech.borrow();
         let Some(speech) = speech.as_ref() else {
-            self.tts_bar.set_visible(false);
+            self.tts_bar.root.set_visible(false);
             return;
         };
         let voice = self
@@ -1189,17 +1346,13 @@ impl Window {
             .borrow()
             .as_ref()
             .and_then(|name| self.voices.borrow().iter().find(|v| &v.name == name).map(|v| v.label()))
+            .or_else(|| self.tts_voice.borrow().clone())
             .unwrap_or_else(|| "default voice".into());
-        let rate = self.tts_rate.get();
-        let speed = if rate == 0 { "normal speed".to_string() } else { format!("speed {rate:+}") };
-        let state = if speech.playing { "Reading aloud" } else { "Paused" };
-        let place = if speech.sentences.is_empty() { String::new() } else { format!(" {}/{}", speech.index + 1, speech.sentences.len()) };
-        let toggle = if speech.playing { "s pause" } else { "s resume" };
-        self.tts_bar.set_label(&format!(
-            "{state}{place}  ·  {voice}  ·  {speed}      {toggle}   V voices   esc stop"
-        ));
-        // The panel is the fuller view: when it's up, the bar would only repeat it.
-        self.tts_bar.set_visible(!self.voice.is_open());
+        let speed = self.speed_label();
+        let state = if !speech.playing { VoiceState::Paused } else if speech.started { VoiceState::Playing } else { VoiceState::Preparing };
+        let place = (!speech.sentences.is_empty()).then(|| (speech.index, speech.sentences.len()));
+        self.tts_bar.set_state(state, &voice, &speed, place, self.speech_error.borrow().as_deref());
+        self.tts_bar.root.set_visible(true);
     }
 
     fn open_search(&self) {
@@ -1757,7 +1910,13 @@ impl Window {
 
     pub fn handle_key(&self, key: gtk::gdk::Key, mods: gtk::gdk::ModifierType) -> glib::Propagation {
         let context = self.context();
-        eprintln!("omaread: DEBUG key={key:?} context={context:?}");
+
+        // Let focused transport buttons receive their activation and traversal keys.
+        let player_focused = gtk::prelude::RootExt::focus(&self.window)
+            .is_some_and(|w| w.is_ancestor(&self.tts_bar.root));
+        if player_focused && matches!(key, gtk::gdk::Key::space | gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter | gtk::gdk::Key::Tab | gtk::gdk::Key::ISO_Left_Tab) {
+            return glib::Propagation::Proceed;
+        }
 
         // Writing a note: Esc cancels, Ctrl+Enter or Ctrl+S saves.
         if self.note_editor.is_open() {
@@ -1857,7 +2016,7 @@ impl Window {
             (Context::Help, Action::First) => self.help.top(),
             (Context::Help, Action::Last) => self.help.bottom(),
             (Context::Help, Action::Close) => self.close_help(),
-            (Context::Reader | Context::Library, Action::CommandLine) => self.palette.open(context),
+            (Context::Reader | Context::Library, Action::CommandLine) => self.palette.open(context, &self.keymap.borrow()),
             (Context::Reader, Action::Search) => self.open_search(),
             (Context::Reader | Context::Search, Action::NextHit) => self.go_to_hit(self.search.step(1)),
             (Context::Reader | Context::Search, Action::PrevHit) => self.go_to_hit(self.search.step(-1)),

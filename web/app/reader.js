@@ -29,6 +29,12 @@ let searchToken = 0
 // and shows which one is being read.
 
 const TTS_HIGHLIGHT = 'omaread-tts'
+let ttsSession = null
+// One block is looked at ahead, so its first sentence can be synthesized
+// while the current block's last sentence is still playing. The iterator is
+// one block ahead until that sentence is requested, which is why prev() below
+// skips a step when this is set.
+let ttsAhead = null
 
 const ttsClearHighlight = () => {
     for (const { doc } of view?.renderer?.getContents?.() ?? [])
@@ -76,23 +82,32 @@ const ttsNextSection = async () => {
     const r = view.renderer
     const before = r.getContents?.()[0]?.index
     await r.nextSection?.()
-    if (r.getContents?.()[0]?.index === before) return false
+    const after = r.getContents?.()[0]?.index
+    // At the end of a book some renderers wrap back to the first section;
+    // that is the end of the reading, not a section to continue into.
+    if (after == null || after === before || after < before) return false
     await ttsInit()
     return true
 }
 
 // Send the block's sentences, skipping blocks with nothing to say.
-const ttsEmit = async ssml => {
+const ttsEmit = async (ssml, session) => {
+    if (session !== ttsSession) return
     let parts = sentencesOf(ssml)
     for (let guard = 0; !parts.length && guard < 200; guard++) {
         const next = view.tts.next()
         if (next == null) {
-            if (!await ttsNextSection()) return emit({ type: 'tts-end' })
+            if (!await ttsNextSection()) {
+                if (session === ttsSession) emit({ type: 'tts-end', session })
+                return
+            }
+            if (session !== ttsSession) return
             parts = sentencesOf(view.tts.start())
         } else parts = sentencesOf(next)
     }
-    if (!parts.length) return emit({ type: 'tts-end' })
-    emit({ type: 'tts-block', sentences: parts })
+    if (session !== ttsSession) return
+    if (!parts.length) return emit({ type: 'tts-end', session })
+    emit({ type: 'tts-block', session, sentences: parts })
 }
 let pendingOpen = {}
 
@@ -391,30 +406,78 @@ globalThis.omaread = {
         selection?.range?.startContainer?.ownerDocument?.getSelection()?.removeAllRanges()
         selection = null
     },
-    async ttsStart({ fromSelection = false } = {}) {
+    async ttsStart({ fromSelection = false, session } = {}) {
+        ttsSession = session
+        ttsAhead = null
         await ttsInit()
-        const range = fromSelection ? selection?.range : null
+        if (session !== ttsSession) return
+        const range = fromSelection ? selection?.range : view.lastLocation?.range
+        // Starting at the visible page, not the start of the section, so
+        // stopping and starting again does not send the reader backwards.
         const ssml = range ? view.tts.from(range) : view.tts.start()
         omaread.clearSelection()
-        await ttsEmit(ssml)
+        await ttsEmit(ssml, session)
+    },
+    // Look one block ahead without leaving this section. Emitted as a
+    // `tts-ahead` block; Rust keeps it and preloads its first sentence.
+    // Rust has started reading the block it peeked; it is no longer ahead.
+    ttsConsumeAhead() {
+        ttsAhead = null
+    },
+    ttsPeek() {
+        const session = ttsSession
+        if (session == null || ttsAhead) return
+        let ssml = view.tts.next()
+        // Skip blocks with nothing to say, but never cross into the next
+        // section here: that would move the page before it is being read.
+        for (let guard = 0; ssml != null && !sentencesOf(ssml).length && guard < 200; guard++)
+            ssml = view.tts.next()
+        if (session !== ttsSession || ssml == null) return
+        const sentences = sentencesOf(ssml)
+        if (!sentences.length) return
+        ttsAhead = sentences
+        emit({ type: 'tts-ahead', session, sentences })
     },
     async ttsNext() {
+        const session = ttsSession
+        if (session == null) return
+        if (ttsAhead) {
+            const sentences = ttsAhead
+            ttsAhead = null
+            emit({ type: 'tts-block', session, sentences })
+            return
+        }
         await ttsInit()
+        if (session !== ttsSession) return
         const ssml = view.tts.next()
         if (ssml == null) {
-            if (!await ttsNextSection()) return emit({ type: 'tts-end' })
-            return ttsEmit(view.tts.start())
+            if (!await ttsNextSection()) {
+                if (session === ttsSession) emit({ type: 'tts-end', session })
+                return
+            }
+            if (session !== ttsSession) return
+            return ttsEmit(view.tts.start(), session)
         }
-        await ttsEmit(ssml)
+        await ttsEmit(ssml, session)
     },
     async ttsPrev() {
+        const session = ttsSession
+        if (session == null) return
+        // A peek left the iterator one block ahead; step back over it first.
+        if (ttsAhead) {
+            ttsAhead = null
+            view.tts.prev()
+        }
         await ttsInit()
-        await ttsEmit(view.tts.prev() ?? view.tts.start())
+        if (session !== ttsSession) return
+        await ttsEmit(view.tts.prev() ?? view.tts.start(), session)
     },
     ttsMark(mark) {
         if (mark != null) view?.tts?.setMark(mark)
     },
     ttsStop() {
+        ttsSession = null
+        ttsAhead = null
         ttsClearHighlight()
     },
     // Search the whole book, streaming results by chapter. A new search (or

@@ -30,13 +30,16 @@ pub enum Command {
     Daemon(ssip::Event),
     /// From the prefetch thread: a sentence ready to cache.
     Preloaded { text: String, voice: String, rate: i32, result: Result<Vec<i16>, String> },
+    Synthesized { generation: u64, seq: u64, result: Result<Vec<i16>, String> },
 }
 
 #[derive(Debug)]
 pub enum Event {
     Ended(u64),
+    Started(u64),
     Voices(Vec<Voice>),
     Error(String),
+    SpeechError(u64, String),
 }
 
 #[derive(Clone)]
@@ -107,22 +110,27 @@ fn kokoro_worker(
     let mut cache: Option<Cached> = None;
     let mut prefetching: Option<String> = None;
     let mut queued: Option<String> = None;
+    let mut generation = 0u64;
 
     while let Ok(command) = rx.recv() {
         match command {
             Command::Speak { seq, text } => {
-                let samples = match cache.take().filter(|c| c.text == text && c.voice == voice && c.rate == rate) {
-                    Some(cached) => cached.samples,
-                    None => match kokoro::speak(&config, &text, &voice, kokoro::speed(rate)) {
-                        Ok(samples) => samples,
-                        Err(e) => {
-                            let _ = events.send_blocking(Event::Error(e));
-                            continue;
-                        }
-                    },
-                };
-                if play_tx.send(Playback::Play { seq, samples }).is_err() {
-                    break;
+                generation = generation.wrapping_add(1);
+                if let Some(cached) = cache.take().filter(|c| c.text == text && c.voice == voice && c.rate == rate) {
+                    let _ = play_tx.send(Playback::Play { seq, samples: cached.samples });
+                } else {
+                    let (tx, config, voice, generation) = (tx.clone(), config.clone(), voice.clone(), generation);
+                    std::thread::spawn(move || {
+                        let result = kokoro::speak(&config, &text, &voice, kokoro::speed(rate));
+                        let _ = tx.send(Command::Synthesized { generation, seq, result });
+                    });
+                }
+            }
+            Command::Synthesized { generation: got, seq, result } => {
+                if got != generation { continue; }
+                match result {
+                    Ok(samples) => { let _ = play_tx.send(Playback::Play { seq, samples }); }
+                    Err(e) => { let _ = events.send_blocking(Event::SpeechError(seq, e)); }
                 }
             }
             Command::Preload { text } => {
@@ -154,6 +162,7 @@ fn kokoro_worker(
                 }
             }
             Command::Stop => {
+                generation = generation.wrapping_add(1);
                 let _ = play_tx.send(Playback::Stop);
             }
             Command::Rate(r) => {
@@ -167,7 +176,10 @@ fn kokoro_worker(
             // Kokoro picks its language from the voice id.
             Command::Language(_) => {}
             Command::ListVoices => {
-                let _ = events.send_blocking(Event::Voices(kokoro::voices(&config)));
+                let (events, config) = (events.clone(), config.clone());
+                std::thread::spawn(move || {
+                    let _ = events.send_blocking(Event::Voices(kokoro::voices(&config)));
+                });
             }
             Command::Daemon(_) => {}
         }
@@ -222,7 +234,7 @@ fn playback(rx: mpsc::Receiver<Playback>, events: async_channel::Sender<Event>) 
                             player = Some(connected);
                         }
                         Err(e) => {
-                            let _ = events.send_blocking(Event::Error(format!("Audio output isn't available: {e}")));
+                            let _ = events.send_blocking(Event::SpeechError(seq, format!("Audio output isn't available: {e}")));
                             continue;
                         }
                     }
@@ -235,6 +247,7 @@ fn playback(rx: mpsc::Receiver<Playback>, events: async_channel::Sender<Event>) 
                     let samples: Vec<f32> = samples.iter().map(|&s| s as f32 / 32_768.0).collect();
                     player.append(rodio::buffer::SamplesBuffer::new(channels, rate, samples));
                 }
+                let _ = events.send_blocking(Event::Started(seq));
                 loop {
                     if player.empty() {
                         let _ = events.send_blocking(Event::Ended(seq));
@@ -318,8 +331,9 @@ fn speechd_worker(rx: mpsc::Receiver<Command>, tx: mpsc::Sender<Command>, events
         let result = match command {
             Command::Speak { seq, text } => c.speak(&text).map(|id| {
                 sentences.insert(id, seq);
+                let _ = events.send_blocking(Event::Started(seq));
             }),
-            Command::Preload { .. } | Command::Preloaded { .. } => Ok(()),
+            Command::Preload { .. } | Command::Preloaded { .. } | Command::Synthesized { .. } => Ok(()),
             Command::Stop => {
                 sentences.clear();
                 c.stop()
@@ -346,5 +360,42 @@ fn speechd_worker(rx: mpsc::Receiver<Command>, tx: mpsc::Sender<Command>, events
         if let Err(e) = result {
             error(format!("Speech: {e}"));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    #[test]
+    fn stop_discards_late_synthesized_audio() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (arrived_tx, arrived_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut first, _) = listener.accept().unwrap();
+            let mut buf = [0; 4096];
+            let _ = first.read(&mut buf);
+            arrived_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            first.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n\0\0").unwrap();
+            let (mut second, _) = listener.accept().unwrap();
+            let _ = second.read(&mut buf);
+            second.write_all(b"HTTP/1.1 500 Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+        });
+        let (events_tx, events_rx) = async_channel::unbounded();
+        let config = TtsConfig { url: format!("http://{addr}"), ..TtsConfig::default() };
+        let tts = Tts::start(events_tx, config);
+        tts.send(Command::Speak { seq: 1, text: "First sentence".into() });
+        arrived_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        tts.send(Command::Stop);
+        tts.send(Command::Speak { seq: 2, text: "Second sentence".into() });
+        release_tx.send(()).unwrap();
+        let event = events_rx.recv_blocking().unwrap();
+        assert!(matches!(event, Event::SpeechError(2, _)), "unexpected event: {event:?}");
+        server.join().unwrap();
     }
 }

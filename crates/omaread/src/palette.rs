@@ -7,13 +7,13 @@ use std::rc::Rc;
 use gtk::prelude::*;
 use omaread_core::fuzzy;
 
-use crate::keys::{Action, Context};
+use crate::keys::{Action, Context, Keymap};
 
 /// A command: what it's called, its keys, and what it does.
 #[derive(Debug, Clone)]
 pub struct Entry {
     pub name: &'static str,
-    pub keys: &'static str,
+    pub keys: String,
     pub run: Run,
 }
 
@@ -27,8 +27,8 @@ pub enum Run {
 /// The commands on offer while reading.
 pub fn reader_commands() -> Vec<Entry> {
     use Action::*;
-    let a = |name, keys, action| Entry { name, keys, run: Run::Action(action) };
-    let l = |name, keys, line| Entry { name, keys, run: Run::Line(line) };
+    let a = |name, keys: &str, action| Entry { name, keys: keys.into(), run: Run::Action(action) };
+    let l = |name, keys: &str, line| Entry { name, keys: keys.into(), run: Run::Line(line) };
     vec![
         a("Contents", "t", Toc),
         a("Search in book", "/", Search),
@@ -65,7 +65,7 @@ pub fn reader_commands() -> Vec<Entry> {
 
 pub fn library_commands() -> Vec<Entry> {
     use Action::*;
-    let a = |name, keys, action| Entry { name, keys, run: Run::Action(action) };
+    let a = |name, keys: &str, action| Entry { name, keys: keys.into(), run: Run::Action(action) };
     vec![
         a("Open", "enter", Open),
         a("Filter books", "/", Filter),
@@ -76,7 +76,7 @@ pub fn library_commands() -> Vec<Entry> {
         a("Last book", "G", Last),
         a("Rescan the library", "gr", Rescan),
         a("Help", "?", Help),
-        a("Quit", "q", Quit),
+        a("Quit", "ctrl+q", Quit),
     ]
 }
 
@@ -134,11 +134,25 @@ impl Palette {
         self.root.is_visible()
     }
 
-    pub fn open(&self, context: Context) {
-        let commands = match context {
+    pub fn open(&self, context: Context, keymap: &Keymap) {
+        let mut commands = match context {
             Context::Library => library_commands(),
             _ => reader_commands(),
         };
+        for command in &mut commands {
+            if let Run::Action(action) = command.run {
+                let primary = command.keys.as_str();
+                let defaults: &[&str] = match (context, action) {
+                    (Context::Reader, Action::NextSection) => &["J", "L"],
+                    (Context::Reader, Action::PrevSection) => &["K", "H"],
+                    (Context::Reader, Action::Bigger) => &["+", "="],
+                    (Context::Reader | Context::Library, Action::First) => &["gg", "home"],
+                    (Context::Reader | Context::Library, Action::Last) => &["G", "end"],
+                    _ => std::slice::from_ref(&primary),
+                };
+                command.keys = keymap.labels(context, action, defaults);
+            }
+        }
         self.commands.replace(commands);
         self.context.replace(Some(context));
         self.entry.set_text("");
@@ -175,7 +189,7 @@ impl Palette {
             .commands
             .borrow()
             .iter()
-            .filter_map(|e| fuzzy::score(&query, e.name).or_else(|| fuzzy::score(&query, e.keys).map(|s| s - 1000)).map(|s| (s, e.clone())))
+            .filter_map(|e| fuzzy::score(&query, e.name).or_else(|| fuzzy::score(&query, &e.keys).map(|s| s - 1000)).map(|s| (s, e.clone())))
             .collect();
         if !query.trim().is_empty() {
             scored.sort_by(|a, b| b.0.cmp(&a.0));
@@ -186,7 +200,7 @@ impl Palette {
         }
         for e in &shown {
             let name = gtk::Label::builder().label(e.name).xalign(0.0).hexpand(true).build();
-            let keys = gtk::Label::builder().label(e.keys).css_classes(["key"]).build();
+            let keys = gtk::Label::builder().label(&e.keys).css_classes(["key"]).build();
             let row = gtk::Box::builder().spacing(12).build();
             row.append(&name);
             row.append(&keys);

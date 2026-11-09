@@ -52,10 +52,16 @@ pub enum Event {
     },
     /// The next block's sentences to read aloud.
     TtsBlock {
+        session: u64,
+        sentences: Vec<Sentence>,
+    },
+    /// The block after the current one, looked at ahead.
+    TtsAhead {
+        session: u64,
         sentences: Vec<Sentence>,
     },
     /// Nothing left to read.
-    TtsEnd,
+    TtsEnd { session: u64 },
     SearchResults {
         chapter: String,
         items: Vec<crate::search_view::Hit>,

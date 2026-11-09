@@ -212,6 +212,27 @@ impl Keymap {
         map
     }
 
+    /// Display an action's effective keys, including overrides that take a
+    /// default key from another action in the same context.
+    pub fn labels(&self, context: Context, action: Action, defaults: &[&str]) -> String {
+        let mut keys: Vec<String> = if self.rebound.contains(&(context, action)) {
+            Vec::new()
+        } else {
+            defaults.iter().filter(|key| {
+                canonical(key).and_then(|spec| self.overrides.get(&(context, spec)))
+                    .is_none_or(|assigned| *assigned == action)
+            }).map(|key| (*key).to_string()).collect()
+        };
+        let mut added: Vec<_> = self.overrides.iter()
+            .filter(|((ctx, _), assigned)| *ctx == context && **assigned == action)
+            .map(|((_, key), _)| key.clone()).collect();
+        added.sort();
+        for key in added {
+            if !keys.contains(&key) { keys.push(key); }
+        }
+        if keys.is_empty() { "unbound".into() } else { keys.join("  ") }
+    }
+
     /// The action for a key press, if any. `None` lets the key through.
     pub fn press(&mut self, context: Context, key: Key, mods: ModifierType) -> Option<Action> {
         if !self.overrides.is_empty()
@@ -629,6 +650,25 @@ fn help(key: Key, ch: Option<char>) -> Option<Action> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn displayed_labels_follow_rebindings_and_stolen_keys() {
+        let config: omaread_core::config::Config = toml_for_keymap();
+        let map = Keymap::new(&config.keymap);
+        assert_eq!(map.labels(Context::Reader, Action::Speak, &["s"]), "p");
+        assert_eq!(map.labels(Context::Reader, Action::Toc, &["t"]), "unbound");
+        assert_eq!(map.labels(Context::Reader, Action::Search, &["/"]), "/  t");
+        assert_eq!(map.labels(Context::Library, Action::Open, &["enter"]), "enter");
+    }
+
+    fn toml_for_keymap() -> omaread_core::config::Config {
+        let mut config = omaread_core::config::Config::default();
+        let mut reader = std::collections::BTreeMap::new();
+        reader.insert("speak".into(), omaread_core::config::Keys::One("p".into()));
+        reader.insert("search".into(), omaread_core::config::Keys::Many(vec!["/".into(), "t".into()]));
+        config.keymap.insert("reader".into(), reader);
+        config
+    }
 
     fn press(map: &mut Keymap, context: Context, c: char) -> Option<Action> {
         let key = Key::from_name(c.to_string()).expect("a key for every letter");
