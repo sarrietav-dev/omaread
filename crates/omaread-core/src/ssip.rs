@@ -11,6 +11,8 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::Duration;
 
+pub use crate::voice::Voice;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     Begin(u64),
@@ -21,27 +23,6 @@ pub enum Event {
     Resumed(u64),
     /// The connection closed (the daemon quit or crashed).
     Disconnected,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Voice {
-    /// What `SET SELF SYNTHESIS_VOICE` takes (for piper, the model path).
-    pub name: String,
-    pub language: String,
-    pub variant: String,
-}
-
-impl Voice {
-    /// "lessac (medium)" from a piper model path; the name itself otherwise.
-    pub fn label(&self) -> String {
-        let file = self.name.rsplit('/').next().unwrap_or(&self.name);
-        let stem = file.strip_suffix(".onnx").unwrap_or(file);
-        let mut parts = stem.split('-');
-        match (parts.next(), parts.next(), parts.next()) {
-            (Some(_lang), Some(speaker), Some(quality)) => format!("{speaker} ({quality})"),
-            _ => stem.to_string(),
-        }
-    }
 }
 
 /// `250-piper` → (250, false, "piper"); `250 OK DONE` → (250, true, "OK DONE").
@@ -259,12 +240,6 @@ mod tests {
     fn a_dot_line_cannot_end_the_message() {
         assert_eq!(escape_body("one\n.\ntwo"), "one\r\n..\r\ntwo");
         assert_eq!(escape_body(".start"), "..start");
-    }
-
-    #[test]
-    fn piper_voices_get_readable_names() {
-        let v = Voice { name: "/usr/share/piper-voices/en/en_US/lessac/medium/en_US-lessac-medium.onnx".into(), language: "en".into(), variant: "MALE1".into() };
-        assert_eq!(v.label(), "lessac (medium)");
     }
 }
 

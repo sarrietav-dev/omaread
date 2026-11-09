@@ -14,3 +14,4 @@ webkit = { version = "0.6", package = "webkit6", features = ["v2_48"] }
 rust-embed = { version = "8", features = ["include-exclude"] }
 notify = "8"
 async-channel = "2"
+rodio = { version = "0.23", default-features = false, features = ["playback"] }

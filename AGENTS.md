@@ -17,11 +17,11 @@ bin/omaread-install [--default] # release build + install to ~/.local (+ default
 
 CLI subcommands handled in `main.rs` before GTK starts: `scan`, `status [--json]`, `check-library [--json]` (opens every EPUB, smoke test), `lookup`, `import-foliate`.
 
-System deps (Arch): `gtk4 libadwaita webkitgtk-6.0`.
+System deps (Arch): `gtk4 libadwaita webkitgtk-6.0 alsa-lib`.
 
 ## Architecture
 
-- **`crates/omaread-core`**: GTK-free logic, unit-tested: EPUB metadata/covers, library index + SQLite (`db`), annotations, config/keymap TOML, Omarchy theme tokens → stylesheet (`theme`, `style`), lookup providers, SSIP speech client, reading-speed model, fuzzy matching.
+- **`crates/omaread-core`**: GTK-free logic, unit-tested: EPUB metadata/covers, library index + SQLite (`db`), annotations, config/keymap TOML, Omarchy theme tokens → stylesheet (`theme`, `style`), lookup providers, Kokoro HTTP client (`kokoro`), SSIP client for Piper (`ssip`), reading-speed model, fuzzy matching.
 - **`crates/omaread`**: the GTK app. `window.rs` (the big one) owns a `gtk::Overlay`: base is the library grid or the reader; every panel (`toc_view`, `search_view`, `settings_view`, `annotations_view`, `lookup_view`, `voice_view`, `palette`, `help_view`) is a native overlay drawn over the book. `keys.rs` holds the vim-style keymap, with per-context actions that `config.toml` can rebind.
 - **Web page ↔ Rust bridge**: `web/app/reader.js` (+ `typography.js`) runs foliate-js inside a `webkit6::WebView`. Rust → page via `reader.rs` calling `globalThis.omaread.<fn>()`; page → Rust via JSON messages parsed into `reader::Event` (serde tag = `type`, kebab-case). Adding an event means changing both sides. The web view only renders the book; all chrome is native.
 - **Assets**: `assets.rs` serves `web/` over the `omaread://app/…` scheme using rust-embed. In debug builds it reads from disk (edit JS, reload, no rebuild); release embeds it. foliate-js is vendored in `web/foliate-js` (don't edit; pinned upstream copy). Books are served to WebKit by path, never copied or extracted.

@@ -1,14 +1,20 @@
-//! Text-to-speech through speech-dispatcher, on a worker thread.
+//! Text-to-speech on a worker thread.
 //!
-//! The book is spoken a sentence at a time: each sentence is its own SSIP
-//! message, and its END event moves the reading on. That works with any
-//! speech-dispatcher module, including generic ones (piper) that don't send
-//! index marks.
+//! Kokoro is the default: each sentence is synthesized by a local
+//! OpenAI-compatible server (Kokoro-FastAPI) and played as raw PCM. Setting
+//! `[tts] engine = "piper"` keeps the speech-dispatcher/SSIP path instead.
+//! Either way the book is spoken one sentence at a time: our own END event
+//! moves the reading on, so engines that don't send index marks still work.
 
 use std::collections::HashMap;
+use std::num::NonZero;
 use std::sync::mpsc;
+use std::time::Duration;
 
-use omaread_core::ssip::{self, Voice};
+use omaread_core::config::{TtsConfig, TtsEngine};
+use omaread_core::kokoro;
+use omaread_core::ssip;
+use omaread_core::voice::Voice;
 
 pub enum Command {
     /// Speak a sentence; `seq` comes back in its events.
@@ -35,12 +41,12 @@ pub struct Tts {
 }
 
 impl Tts {
-    pub fn start(events: async_channel::Sender<Event>) -> Tts {
+    pub fn start(events: async_channel::Sender<Event>, config: TtsConfig) -> Tts {
         let (tx, rx) = mpsc::channel::<Command>();
         let worker_tx = tx.clone();
         std::thread::Builder::new()
             .name("tts".into())
-            .spawn(move || worker(rx, worker_tx, events))
+            .spawn(move || worker(rx, worker_tx, events, config))
             .expect("a thread for speech");
         Tts { tx }
     }
@@ -50,7 +56,137 @@ impl Tts {
     }
 }
 
-fn worker(rx: mpsc::Receiver<Command>, tx: mpsc::Sender<Command>, events: async_channel::Sender<Event>) {
+fn worker(
+    rx: mpsc::Receiver<Command>,
+    tx: mpsc::Sender<Command>,
+    events: async_channel::Sender<Event>,
+    config: TtsConfig,
+) {
+    match config.engine {
+        TtsEngine::Kokoro => kokoro_worker(rx, events, config),
+        TtsEngine::Piper => speechd_worker(rx, tx, events),
+    }
+}
+
+// --- Kokoro -----------------------------------------------------------------
+
+enum Playback {
+    Play { seq: u64, samples: Vec<i16> },
+    Stop,
+}
+
+fn kokoro_worker(rx: mpsc::Receiver<Command>, events: async_channel::Sender<Event>, config: TtsConfig) {
+    let (play_tx, play_rx) = mpsc::channel::<Playback>();
+    std::thread::Builder::new()
+        .name("tts-audio".into())
+        .spawn({
+            let events = events.clone();
+            move || playback(play_rx, events)
+        })
+        .expect("a thread for audio");
+
+    let mut rate = 0;
+    let mut voice = if config.voice.is_empty() { "af_heart".to_string() } else { config.voice.clone() };
+
+    while let Ok(command) = rx.recv() {
+        match command {
+            Command::Speak { seq, text } => {
+                match kokoro::speak(&config, &text, &voice, kokoro::speed(rate)) {
+                    Ok(samples) => {
+                        if play_tx.send(Playback::Play { seq, samples }).is_err() {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        let _ = events.send_blocking(Event::Error(e));
+                    }
+                }
+            }
+            Command::Stop => {
+                let _ = play_tx.send(Playback::Stop);
+            }
+            Command::Rate(r) => rate = r,
+            Command::Voice(v) => voice = v,
+            // Kokoro picks its language from the voice id.
+            Command::Language(_) => {}
+            Command::ListVoices => {
+                let _ = events.send_blocking(Event::Voices(kokoro::voices(&config)));
+            }
+            Command::Daemon(_) => {}
+        }
+    }
+}
+
+/// Owns the audio device. A new sentence replaces the old one, and an END
+/// event goes out when the samples have actually finished playing. The device
+/// is opened on the first sentence, not when the app starts.
+fn playback(rx: mpsc::Receiver<Playback>, events: async_channel::Sender<Event>) {
+    let mut _sink: Option<rodio::MixerDeviceSink> = None;
+    let mut player: Option<rodio::Player> = None;
+
+    let mut pending = None;
+    loop {
+        let command = match pending.take() {
+            Some(command) => command,
+            None => match rx.recv() {
+                Ok(command) => command,
+                Err(_) => break,
+            },
+        };
+        match command {
+            Playback::Stop => {
+                if let Some(player) = &player {
+                    player.stop();
+                }
+            }
+            Playback::Play { seq, samples } => {
+                if player.is_none() {
+                    match rodio::DeviceSinkBuilder::open_default_sink() {
+                        Ok(mut opened) => {
+                            opened.log_on_drop(false);
+                            let connected = rodio::Player::connect_new(opened.mixer());
+                            if cfg!(debug_assertions) && std::env::var_os("OMAREAD_TTS_MUTE").is_some() {
+                                connected.set_volume(0.0);
+                            }
+                            _sink = Some(opened);
+                            player = Some(connected);
+                        }
+                        Err(e) => {
+                            let _ = events.send_blocking(Event::Error(format!("Audio output isn't available: {e}")));
+                            continue;
+                        }
+                    }
+                }
+                let Some(player) = player.as_ref() else { continue };
+                player.stop();
+                if !samples.is_empty() {
+                    let channels = NonZero::new(1).expect("one channel");
+                    let rate = NonZero::new(kokoro::SAMPLE_RATE).expect("a sample rate");
+                    let samples: Vec<f32> = samples.iter().map(|&s| s as f32 / 32_768.0).collect();
+                    player.append(rodio::buffer::SamplesBuffer::new(channels, rate, samples));
+                }
+                loop {
+                    if player.empty() {
+                        let _ = events.send_blocking(Event::Ended(seq));
+                        break;
+                    }
+                    match rx.try_recv() {
+                        Ok(command) => {
+                            pending = Some(command);
+                            break;
+                        }
+                        Err(mpsc::TryRecvError::Empty) => std::thread::sleep(Duration::from_millis(20)),
+                        Err(mpsc::TryRecvError::Disconnected) => return,
+                    }
+                }
+            }
+        }
+    }
+}
+
+// --- speech-dispatcher (Piper and other modules) ----------------------------
+
+fn speechd_worker(rx: mpsc::Receiver<Command>, tx: mpsc::Sender<Command>, events: async_channel::Sender<Event>) {
     let mut client: Option<ssip::Client> = None;
     // Settings to restore on a new connection.
     let mut rate = 0;

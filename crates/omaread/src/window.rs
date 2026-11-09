@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use adw::prelude::*;
 use gtk::{gio, glib};
-use omaread_core::config::{self, Config};
+use omaread_core::config::{self, Config, TtsEngine};
 use omaread_core::db::{Db, Progress};
 use omaread_core::annotations::{self, Annotation, Kind};
 use omaread_core::command::{self, Command, ExportFormat};
@@ -43,6 +43,9 @@ const PREFS_SETTING: &str = "reader_prefs";
 const FOLIATE_IMPORTED: &str = "foliate_imported";
 const TTS_RATE: &str = "tts_rate";
 const TTS_VOICE: &str = "tts_voice";
+/// Kokoro and speech-dispatcher voice names don't mean the same thing, so
+/// each engine remembers its own.
+const TTS_VOICE_KOKORO: &str = "tts_voice_kokoro";
 /// foliate-js counts a "location" as this many bytes of text.
 const BYTES_PER_LOCATION: f64 = 1500.0;
 /// The fixed pace foliate-js's time estimates assume, which we rescale.
@@ -59,12 +62,14 @@ pub struct Window {
     palette: Rc<Palette>,
     help: Rc<HelpView>,
     tts: Tts,
+    /// Which engine is speaking, chosen by `[tts] engine`.
+    tts_engine: TtsEngine,
     speech: RefCell<Option<Speech>>,
     tts_bar: gtk::Label,
     /// The voice panel: the list of voices and the pace.
     voice: Rc<VoicePanel>,
-    /// Voices for the book's language, as speech-dispatcher lists them.
-    voices: RefCell<Vec<omaread_core::ssip::Voice>>,
+    /// Voices for the book's language, from the active engine.
+    voices: RefCell<Vec<omaread_core::voice::Voice>>,
     tts_rate: Cell<i32>,
     tts_voice: RefCell<Option<String>>,
     lookup: Rc<LookupView>,
@@ -117,7 +122,7 @@ struct Speech {
     playing: bool,
     sentences: Vec<Sentence>,
     index: usize,
-    /// The sentence speech-dispatcher is reading (our number for it).
+    /// The sentence the engine is reading (our number for it).
     seq: u64,
 }
 
@@ -217,7 +222,7 @@ impl Window {
         let palette = Palette::new();
         let help = HelpView::new();
         let (tts_tx, tts_rx) = async_channel::unbounded::<tts::Event>();
-        let tts = Tts::start(tts_tx);
+        let tts = Tts::start(tts_tx, config.tts.clone());
         let tts_bar = gtk::Label::builder()
             .halign(gtk::Align::Center)
             .valign(gtk::Align::End)
@@ -304,12 +309,16 @@ impl Window {
             palette,
             help,
             tts,
+            tts_engine: config.tts.engine,
             speech: RefCell::default(),
             tts_bar,
             voice,
             voices: RefCell::default(),
             tts_rate: Cell::new(0),
-            tts_voice: RefCell::default(),
+            tts_voice: RefCell::new(match config.tts.engine {
+                TtsEngine::Kokoro => Some(config.tts.voice.clone()).filter(|v| !v.is_empty()),
+                TtsEngine::Piper => None,
+            }),
             lookup,
             lookup_tx,
             search,
@@ -348,7 +357,12 @@ impl Window {
         }
         if let Some(db) = &win.db {
             win.tts_rate.set(db.setting(TTS_RATE).ok().flatten().and_then(|r| r.parse().ok()).unwrap_or(0));
-            win.tts_voice.replace(db.setting(TTS_VOICE).ok().flatten());
+            let stored = db.setting(win.voice_setting()).ok().flatten();
+            let voice = stored.or_else(|| match win.tts_engine {
+                TtsEngine::Kokoro => Some(config.tts.voice.clone()).filter(|v| !v.is_empty()),
+                TtsEngine::Piper => None,
+            });
+            win.tts_voice.replace(voice);
         }
         glib::spawn_future_local({
             let win = Rc::downgrade(&win);
@@ -1081,7 +1095,7 @@ impl Window {
     fn set_voice(&self, voice: String) {
         self.tts.send(tts::Command::Voice(voice.clone()));
         if let Some(db) = &self.db {
-            let _ = db.set_setting(TTS_VOICE, &voice);
+            let _ = db.set_setting(self.voice_setting(), &voice);
         }
         self.tts_voice.replace(Some(voice));
         if self.speech.borrow().as_ref().is_some_and(|s| s.playing) {
@@ -1089,6 +1103,15 @@ impl Window {
             self.speak_current();
         }
         self.update_tts_bar();
+    }
+
+    /// Kokoro and speech-dispatcher use different names for their voices, so
+    /// they don't overwrite each other's choice.
+    fn voice_setting(&self) -> &'static str {
+        match self.tts_engine {
+            TtsEngine::Kokoro => TTS_VOICE_KOKORO,
+            TtsEngine::Piper => TTS_VOICE,
+        }
     }
 
     // --- The voice panel ----------------------------------------------------

@@ -21,8 +21,49 @@ use serde::Deserialize;
 pub struct Config {
     pub library: LibraryConfig,
     pub lookup: LookupConfig,
+    pub tts: TtsConfig,
     /// `[keymap.<context>] <action> = ["key", …]` rebinds the defaults.
     pub keymap: Keymap,
+}
+
+/// Which engine reads books aloud.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TtsEngine {
+    /// A local Kokoro-FastAPI (or compatible) server, over HTTP.
+    #[default]
+    Kokoro,
+    /// speech-dispatcher over SSIP; its modules include Piper.
+    #[serde(alias = "speechd", alias = "speech-dispatcher")]
+    Piper,
+}
+
+/// `[tts]` in the config file. Kokoro is the default; `engine = "piper"`
+/// keeps the old speech-dispatcher path (and its configured voices).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct TtsConfig {
+    pub engine: TtsEngine,
+    /// An OpenAI-compatible base URL, or the full `/audio/speech` endpoint.
+    pub url: String,
+    /// The model name the server expects; Kokoro-FastAPI calls it `kokoro`.
+    pub model: String,
+    /// The default voice, used until one is picked in the app.
+    pub voice: String,
+    /// Only for servers that set `API_KEYS`; sent as a bearer token.
+    pub api_key: Option<String>,
+}
+
+impl Default for TtsConfig {
+    fn default() -> Self {
+        TtsConfig {
+            engine: TtsEngine::default(),
+            url: "http://127.0.0.1:8880/v1".into(),
+            model: "kokoro".into(),
+            voice: "af_heart".into(),
+            api_key: None,
+        }
+    }
 }
 
 /// One binding's keys: `["j", "space"]`, or a lone `"j"`.
@@ -227,6 +268,30 @@ mod tests {
         let c = Config::parse("[library]\nfolders = [\"/srv/books\", \"~/x\"]").unwrap();
         assert_eq!(c.library_folders()[0], PathBuf::from("/srv/books"));
         assert!(c.library_folders()[1].ends_with("x"));
+    }
+
+    #[test]
+    fn tts_is_kokoro_by_default() {
+        let c = Config::parse("").unwrap();
+        assert_eq!(c.tts.engine, TtsEngine::Kokoro);
+        assert_eq!(c.tts.url, "http://127.0.0.1:8880/v1");
+        assert_eq!(c.tts.voice, "af_heart");
+    }
+
+    #[test]
+    fn tts_can_be_piper_or_point_at_another_server() {
+        let c = Config::parse("[tts]\nengine = \"piper\"\n").unwrap();
+        assert_eq!(c.tts.engine, TtsEngine::Piper);
+        // The speech-dispatcher name and a full endpoint both read naturally.
+        assert_eq!(Config::parse("[tts]\nengine = \"speechd\"\n").unwrap().tts.engine, TtsEngine::Piper);
+        let c = Config::parse(
+            "[tts]\nurl = \"http://localhost:9999/v1/audio/speech\"\nmodel = \"tts-1\"\nvoice = \"bf_emma\"\napi_key = \"secret\"\n",
+        )
+        .unwrap();
+        assert_eq!(c.tts.url, "http://localhost:9999/v1/audio/speech");
+        assert_eq!(c.tts.model, "tts-1");
+        assert_eq!(c.tts.voice, "bf_emma");
+        assert_eq!(c.tts.api_key.as_deref(), Some("secret"));
     }
 
     #[test]

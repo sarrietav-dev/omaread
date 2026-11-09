@@ -16,7 +16,7 @@ library in `~/Documents/Books`.
 | Keys | Vim-style everywhere, `?` shows all bindings, `:` command palette |
 | Library | Cover grid over folders the reader adds (EPUB only; PDFs/DjVu ignored); the sidebar shows each as a collapsible folder tree |
 | Lookups | Pluggable providers in config; defaults: Wiktionary, Wikipedia, translate |
-| TTS | speech-dispatcher over SSIP (your piper module + voices) |
+| TTS | Kokoro via a local OpenAI-compatible server (default); Piper over speech-dispatcher |
 | Future | AI features: designed in via the command registry, provider system, and CLI (see the last section) |
 | Translate | Spanish ⇄ English: text detected as Spanish goes to English, anything else goes to Spanish |
 | Reading mode | Paginated by default (auto columns: 2 when wide); scrolled supported and switchable per book |
@@ -37,7 +37,7 @@ library in `~/Documents/Books`.
         ▼
  omaread-core (pure Rust, no GTK, unit-tested)
    library index · SQLite · EPUB metadata/covers · theme tokens · config
-   lookup providers · TTS (SSIP) · reading-speed model · Foliate import
+   lookup providers · Kokoro TTS · SSIP (Piper) · reading-speed model · Foliate import
 ```
 
 * **The app's own page and foliate-js are served from the binary** over
@@ -204,8 +204,10 @@ name = "Browser";    kind = "url"; key = "W"; url = "https://duckduckgo.com/?q={
 
 ### Text-to-speech
 
-* Rust talks to speech-dispatcher over SSIP, which reaches your piper module
-  and voices.
+* Kokoro is the default engine: Rust sends each sentence to a local
+  OpenAI-compatible server (Kokoro-FastAPI) and plays the returned 24 kHz
+  PCM with rodio. Piper remains selectable (`[tts] engine = "piper"`), which
+  keeps the speech-dispatcher/SSIP path and its modules.
 * foliate-js's TTS module turns the page into SSML with `<mark>`s. Rust sends
   it in chunks, reads the index-mark events back, and the book highlights the
   sentence being spoken and turns pages automatically.
@@ -213,7 +215,7 @@ name = "Browser";    kind = "url"; key = "W"; url = "https://duckduckgo.com/?q={
   in the TTS bar overlay, and start from the selection or from the top of the
   page.
 * Stops cleanly on window close or book change, and survives the
-  speech-dispatcher daemon restarting.
+  speech-dispatcher daemon restarting when Piper is in use.
 
 ## Keybindings (default, remappable in config)
 
@@ -270,7 +272,8 @@ sentence-by-sentence without the mouse.
 6. **Search** and the **command palette**.
 7. **Lookups:** provider system, the three defaults, `command` and `url`
    kinds.
-8. **TTS:** SSIP client, SSML marks, sentence highlight, TTS bar.
+8. **TTS:** Kokoro client and playback, Piper via SSIP, SSML marks,
+   sentence highlight, TTS bar.
 9. **Polish:** help overlay, keymap config, library smoke test,
    `bin/omaread-install` + PKGBUILD.
 

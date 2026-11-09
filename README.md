@@ -21,7 +21,7 @@ command palette, and every panel drawn over the book instead of in a sidebar.
 ## Installing
 
 ```sh
-sudo pacman -S --needed base-devel rust gtk4 libadwaita webkitgtk-6.0
+sudo pacman -S --needed base-devel rust gtk4 libadwaita webkitgtk-6.0 alsa-lib
 bin/omaread-install            # builds and installs to ~/.local
 bin/omaread-install --default  # …and makes Omaread the app for EPUB files
 ```
@@ -59,9 +59,10 @@ folders = ["~/Books", "/mnt/nas/books"]
 - **Lookups from a selection.** Wiktionary, Wikipedia and Google Translate
   (Spanish ⇄ English, picked from the text), plus local programs and web
   searches of your own.
-- **Read aloud.** Through speech-dispatcher, one sentence at a time with the
-  sentence highlighted; it turns pages and moves through chapters on its own,
-  and your piper voices work.
+- **Read aloud.** Kokoro by default, through a local Kokoro-FastAPI server:
+  one sentence at a time with the sentence highlighted, turning pages and
+  moving through chapters on its own. Piper still works through
+  speech-dispatcher if you set `[tts] engine = "piper"`.
 - **Follows your theme live.** Any installed Omarchy theme can be the app's,
   or one book's.
 
@@ -209,9 +210,40 @@ supports it.
 
 ## Reading aloud
 
-Reading aloud goes through speech-dispatcher (so your piper voices work),
-one sentence at a time with the sentence highlighted; it turns pages and
-moves through chapters on its own. Voice and speed are remembered.
+Reading aloud uses Kokoro by default. Start a local
+[Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI) server (the CPU
+image is enough):
+
+```sh
+docker run -p 8880:8880 ghcr.io/remsky/kokoro-fastapi-cpu:latest
+```
+
+then press `s` in a book. One sentence is synthesized at a time, played as
+it arrives, and highlighted; it turns pages and moves through chapters on
+its own. Voice and speed are remembered.
+
+The server is configurable in `~/.config/omaread/config.toml` (the engine is
+chosen when the app starts):
+
+```toml
+[tts]
+engine = "kokoro"                       # or "piper"
+url = "http://127.0.0.1:8880/v1"        # OpenAI-compatible base URL
+model = "kokoro"
+voice = "af_heart"                      # af_*/am_* (US), bf_*/bm_* (UK), …
+# api_key = "only-if-the-server-sets-API_KEYS"
+```
+
+To keep using Piper, it must be set up as a speech-dispatcher module as
+before; Omaread then speaks through speech-dispatcher instead:
+
+```toml
+[tts]
+engine = "piper"
+```
+
+`V` lists the voices the active engine offers, filtered to the book's
+language.
 
 ## On the command line
 

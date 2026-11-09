@@ -5,14 +5,14 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use gtk::prelude::*;
-use omaread_core::ssip::Voice;
+use omaread_core::voice::Voice;
 
 /// A click in the voice panel, for the window to act on.
 #[derive(Debug, Clone)]
 pub enum VoiceAction {
     /// Use this voice now.
     Pick(String),
-    /// A nudge on speech-dispatcher's rate: negative is slower.
+    /// A nudge on the reader's pace: negative is slower.
     Rate(i32),
     /// Play or pause.
     Toggle,
@@ -99,7 +99,7 @@ impl VoicePanel {
             .max_content_height(300)
             .build();
         let empty = gtk::Label::builder()
-            .label("No voices found. Is a speech-dispatcher module installed?")
+            .label("No voices found. Is the TTS engine running?")
             .xalign(0.0)
             .wrap(true)
             .css_classes(["caption"])
@@ -184,7 +184,7 @@ impl VoicePanel {
         }
     }
 
-    /// What is playing, and how fast. `rate` is speech-dispatcher's -100…100.
+    /// What is playing, and how fast. `rate` is the reader's -100…100.
     pub fn set_state(&self, state: VoiceState, sentence: Option<(usize, usize)>, rate: i32) {
         let place = sentence.map(|(i, n)| format!(" · sentence {} of {}", i + 1, n)).unwrap_or_default();
         let (text, class) = match state {

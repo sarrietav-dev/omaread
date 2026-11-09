@@ -6,9 +6,9 @@ pkgdesc="A fast, keyboard-first EPUB reader for Omarchy"
 arch=('x86_64')
 url="https://github.com/sarrietav-dev/omaread"
 license=('MIT')
-depends=('gtk4' 'libadwaita' 'webkitgtk-6.0')
+depends=('gtk4' 'libadwaita' 'webkitgtk-6.0' 'alsa-lib')
 makedepends=('cargo' 'git' 'pkgconf')
-optdepends=('speech-dispatcher: read aloud'
+optdepends=('speech-dispatcher: read aloud with Piper'
             'hyphen-en: English hyphenation'
             'hyphen-es: Spanish hyphenation')
 provides=('omaread')
