@@ -128,9 +128,20 @@ pub fn scan(db: &mut Db, roots: &[PathBuf], covers: &Path) -> Result<ScanReport,
     let present: HashSet<&str> = files.iter().filter_map(|f| f.path.to_str()).collect();
     let removed: Vec<String> = known.keys().filter(|p| !present.contains(p.as_str())).cloned().collect();
 
+    // A cache cleaner can take the thumbnails while the books stay put. Those
+    // books read as unchanged, so re-read them too and draw their covers again.
+    let lost: HashSet<String> = db
+        .cover_paths()?
+        .into_iter()
+        .filter(|(_, cover)| !Path::new(cover).exists())
+        .map(|(path, _)| path)
+        .collect();
+
     let changed: Vec<&Found> = files
         .iter()
-        .filter(|f| f.path.to_str().is_some_and(|p| known.get(p) != Some(&(f.size, f.mtime))))
+        .filter(|f| {
+            f.path.to_str().is_some_and(|p| known.get(p) != Some(&(f.size, f.mtime)) || lost.contains(p))
+        })
         .collect();
 
     let _ = std::fs::create_dir_all(covers);
@@ -447,6 +458,56 @@ mod tests {
         let third = scan(&mut db, &[dir.path().to_path_buf()], &covers).unwrap();
         assert_eq!(third.removed, 1);
         assert!(load(&db).unwrap().is_empty());
+    }
+
+    /// Write a minimal EPUB whose only resource is a JPEG cover.
+    fn write_book_with_cover(dir: &Path) -> PathBuf {
+        use std::io::Write as _;
+        let opf = r##"<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>With a Cover</dc:title>
+    <dc:identifier>urn:uuid:cover-test</dc:identifier>
+  </metadata>
+  <manifest>
+    <item id="cover" href="cover.jpg" media-type="image/jpeg" properties="cover-image"/>
+  </manifest>
+</package>"##;
+        let mut jpeg = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(20, 30, image::Rgb([180, 40, 40])))
+            .write_to(&mut jpeg, image::ImageFormat::Jpeg)
+            .unwrap();
+
+        let path = dir.join("covered.epub");
+        let mut zip = zip::ZipWriter::new(File::create(&path).unwrap());
+        let options = zip::write::SimpleFileOptions::default();
+        zip.start_file("META-INF/container.xml", options).unwrap();
+        zip.write_all(br#"<container><rootfiles><rootfile full-path="content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>"#).unwrap();
+        zip.start_file("content.opf", options).unwrap();
+        zip.write_all(opf.as_bytes()).unwrap();
+        zip.start_file("cover.jpg", options).unwrap();
+        zip.write_all(jpeg.get_ref()).unwrap();
+        zip.finish().unwrap();
+        path
+    }
+
+    #[test]
+    fn a_wiped_cover_cache_is_rebuilt_by_the_next_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        write_book_with_cover(dir.path());
+        let covers = dir.path().join("covers");
+        let mut db = Db::in_memory().unwrap();
+
+        let first = scan(&mut db, &[dir.path().to_path_buf()], &covers).unwrap();
+        assert_eq!(first.read, 1);
+        let cover = load(&db).unwrap()[0].cover.clone().expect("a cover");
+        assert!(cover.exists());
+
+        std::fs::remove_file(&cover).unwrap();
+        std::fs::remove_dir_all(&covers).unwrap();
+
+        let second = scan(&mut db, &[dir.path().to_path_buf()], &covers).unwrap();
+        assert_eq!(second.read, 1, "a missing thumbnail brings its book back");
+        assert!(load(&db).unwrap()[0].cover.as_ref().is_some_and(|c| c.exists()));
     }
 
     fn book(path: &str) -> Book {

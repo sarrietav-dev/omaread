@@ -151,6 +151,13 @@ impl Db {
         stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect()
     }
 
+    /// `(path, cover)` for every book with a cached thumbnail, to notice a
+    /// cache that was cleaned while the books stayed put.
+    pub fn cover_paths(&self) -> Result<Vec<(String, String)>, Error> {
+        let mut stmt = self.conn.prepare_cached("SELECT path, cover FROM books WHERE cover IS NOT NULL")?;
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect()
+    }
+
     pub fn books(&self) -> Result<Vec<BookRow>, Error> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT path, identity, size, mtime, title, authors, language, series, series_index,
