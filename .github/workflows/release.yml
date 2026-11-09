@@ -6,8 +6,18 @@ on:
   push:
     tags: ['v*']
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  # Release builds don't use incremental artifacts; skipping them keeps the
+  # cached target directory small and restores faster.
+  CARGO_INCREMENTAL: 0
 
 jobs:
   release:
@@ -18,9 +28,20 @@ jobs:
         run: pacman -Syu --noconfirm --needed base-devel git rust gtk4 libadwaita webkitgtk-6.0 alsa-lib
 
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
+      # Caches ~/.cargo and target/; a warm run skips rebuilding the GTK,
+      # WebKit and SQLite dependency graph.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release
+          cache-on-failure: true
+
+      # Test in the same profile the release is built in, so the dependency
+      # graph is compiled once instead of once per profile.
       - name: Test
-        run: cargo test --locked
+        run: cargo test --release --locked
 
       - name: Build
         run: cargo build --release --locked

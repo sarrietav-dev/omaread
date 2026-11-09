@@ -1,0 +1,39 @@
+# Fast feedback on main and pull requests. The release workflow builds the
+# private/expensive release artifacts; this one only proves the tree is good.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Install build dependencies
+        run: pacman -Syu --noconfirm --needed base-devel git rust gtk4 libadwaita webkitgtk-6.0 alsa-lib
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci
+          cache-on-failure: true
+
+      - name: Test
+        run: cargo test --locked
