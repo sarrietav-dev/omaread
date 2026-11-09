@@ -19,6 +19,8 @@ use omaread_core::voice::Voice;
 pub enum Command {
     /// Speak a sentence; `seq` comes back in its events.
     Speak { seq: u64, text: String },
+    /// Synthesize a sentence ahead of time, so the next `Speak` is instant.
+    Preload { text: String },
     Stop,
     Rate(i32),
     Voice(String),
@@ -26,6 +28,8 @@ pub enum Command {
     ListVoices,
     /// From the SSIP reader thread.
     Daemon(ssip::Event),
+    /// From the prefetch thread: a sentence ready to cache.
+    Preloaded { text: String, voice: String, rate: i32, result: Result<Vec<i16>, String> },
 }
 
 #[derive(Debug)]
@@ -63,7 +67,7 @@ fn worker(
     config: TtsConfig,
 ) {
     match config.engine {
-        TtsEngine::Kokoro => kokoro_worker(rx, events, config),
+        TtsEngine::Kokoro => kokoro_worker(rx, tx, events, config),
         TtsEngine::Piper => speechd_worker(rx, tx, events),
     }
 }
@@ -75,7 +79,19 @@ enum Playback {
     Stop,
 }
 
-fn kokoro_worker(rx: mpsc::Receiver<Command>, events: async_channel::Sender<Event>, config: TtsConfig) {
+struct Cached {
+    text: String,
+    voice: String,
+    rate: i32,
+    samples: Vec<i16>,
+}
+
+fn kokoro_worker(
+    rx: mpsc::Receiver<Command>,
+    tx: mpsc::Sender<Command>,
+    events: async_channel::Sender<Event>,
+    config: TtsConfig,
+) {
     let (play_tx, play_rx) = mpsc::channel::<Playback>();
     std::thread::Builder::new()
         .name("tts-audio".into())
@@ -87,26 +103,67 @@ fn kokoro_worker(rx: mpsc::Receiver<Command>, events: async_channel::Sender<Even
 
     let mut rate = 0;
     let mut voice = if config.voice.is_empty() { "af_heart".to_string() } else { config.voice.clone() };
+    // One sentence of lookahead: synthesized while the current one plays.
+    let mut cache: Option<Cached> = None;
+    let mut prefetching: Option<String> = None;
+    let mut queued: Option<String> = None;
 
     while let Ok(command) = rx.recv() {
         match command {
             Command::Speak { seq, text } => {
-                match kokoro::speak(&config, &text, &voice, kokoro::speed(rate)) {
-                    Ok(samples) => {
-                        if play_tx.send(Playback::Play { seq, samples }).is_err() {
-                            break;
+                let samples = match cache.take().filter(|c| c.text == text && c.voice == voice && c.rate == rate) {
+                    Some(cached) => cached.samples,
+                    None => match kokoro::speak(&config, &text, &voice, kokoro::speed(rate)) {
+                        Ok(samples) => samples,
+                        Err(e) => {
+                            let _ = events.send_blocking(Event::Error(e));
+                            continue;
                         }
-                    }
-                    Err(e) => {
-                        let _ = events.send_blocking(Event::Error(e));
-                    }
+                    },
+                };
+                if play_tx.send(Playback::Play { seq, samples }).is_err() {
+                    break;
+                }
+            }
+            Command::Preload { text } => {
+                if cache.as_ref().is_some_and(|c| c.text == text && c.voice == voice && c.rate == rate) {
+                    continue;
+                }
+                if prefetching.as_deref() == Some(text.as_str()) {
+                    continue;
+                }
+                if prefetching.is_some() {
+                    queued = Some(text);
+                    continue;
+                }
+                if start_prefetch(&tx, &config, text.clone(), voice.clone(), rate) {
+                    prefetching = Some(text);
+                }
+            }
+            Command::Preloaded { text, voice: got_voice, rate: got_rate, result } => {
+                if prefetching.as_deref() == Some(text.as_str()) {
+                    prefetching = None;
+                }
+                if got_voice == voice && got_rate == rate && let Ok(samples) = result {
+                    cache = Some(Cached { text, voice: got_voice, rate: got_rate, samples });
+                }
+                if let Some(next) = queued.take()
+                    && start_prefetch(&tx, &config, next.clone(), voice.clone(), rate)
+                {
+                    prefetching = Some(next);
                 }
             }
             Command::Stop => {
                 let _ = play_tx.send(Playback::Stop);
             }
-            Command::Rate(r) => rate = r,
-            Command::Voice(v) => voice = v,
+            Command::Rate(r) => {
+                rate = r;
+                cache = None;
+            }
+            Command::Voice(v) => {
+                voice = v;
+                cache = None;
+            }
             // Kokoro picks its language from the voice id.
             Command::Language(_) => {}
             Command::ListVoices => {
@@ -115,6 +172,19 @@ fn kokoro_worker(rx: mpsc::Receiver<Command>, events: async_channel::Sender<Even
             Command::Daemon(_) => {}
         }
     }
+}
+
+/// Synthesize off the command thread so Stop and Rate stay responsive.
+fn start_prefetch(tx: &mpsc::Sender<Command>, config: &TtsConfig, text: String, voice: String, rate: i32) -> bool {
+    let tx = tx.clone();
+    let config = config.clone();
+    std::thread::Builder::new()
+        .name("tts-prefetch".into())
+        .spawn(move || {
+            let result = kokoro::speak(&config, &text, &voice, kokoro::speed(rate));
+            let _ = tx.send(Command::Preloaded { text, voice, rate, result });
+        })
+        .is_ok()
 }
 
 /// Owns the audio device. A new sentence replaces the old one, and an END
@@ -249,6 +319,7 @@ fn speechd_worker(rx: mpsc::Receiver<Command>, tx: mpsc::Sender<Command>, events
             Command::Speak { seq, text } => c.speak(&text).map(|id| {
                 sentences.insert(id, seq);
             }),
+            Command::Preload { .. } | Command::Preloaded { .. } => Ok(()),
             Command::Stop => {
                 sentences.clear();
                 c.stop()

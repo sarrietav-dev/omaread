@@ -219,8 +219,9 @@ docker run -p 8880:8880 ghcr.io/remsky/kokoro-fastapi-cpu:latest
 ```
 
 then press `s` in a book. One sentence is synthesized at a time, played as
-it arrives, and highlighted; it turns pages and moves through chapters on
-its own. Voice and speed are remembered.
+it arrives, and highlighted; the next one is made while the current plays,
+so it follows without a synthesis pause. It turns pages and moves through
+chapters on its own. Voice and speed are remembered.
 
 The server is configurable in `~/.config/omaread/config.toml` (the engine is
 chosen when the app starts):

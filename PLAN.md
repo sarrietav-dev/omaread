@@ -206,8 +206,10 @@ name = "Browser";    kind = "url"; key = "W"; url = "https://duckduckgo.com/?q={
 
 * Kokoro is the default engine: Rust sends each sentence to a local
   OpenAI-compatible server (Kokoro-FastAPI) and plays the returned 24 kHz
-  PCM with rodio. Piper remains selectable (`[tts] engine = "piper"`), which
-  keeps the speech-dispatcher/SSIP path and its modules.
+  PCM with rodio. The next sentence is synthesized on a prefetch thread
+  while the current one plays. Piper remains selectable
+  (`[tts] engine = "piper"`), which keeps the speech-dispatcher/SSIP path
+  and its modules.
 * foliate-js's TTS module turns the page into SSML with `<mark>`s. Rust sends
   it in chunks, reads the index-mark events back, and the book highlights the
   sentence being spoken and turns pages automatically.

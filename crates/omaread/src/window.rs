@@ -1016,15 +1016,27 @@ impl Window {
 
     /// Mark the current sentence on the page and send it to be spoken.
     fn speak_current(&self) {
-        let (mark, text, seq) = {
+        let (mark, text, seq, next) = {
             let mut speech = self.speech.borrow_mut();
             let Some(s) = speech.as_mut() else { return };
             let Some(sentence) = s.sentences.get(s.index) else { return };
             s.seq += 1;
-            (sentence.mark.clone(), sentence.text.clone(), s.seq)
+            (
+                sentence.mark.clone(),
+                sentence.text.clone(),
+                s.seq,
+                s.sentences.get(s.index + 1).map(|sentence| sentence.text.clone()),
+            )
         };
         self.reader.call("ttsMark", &serde_json::to_string(&mark).unwrap_or_default());
         self.tts.send(tts::Command::Speak { seq, text });
+        // Kokoro can make the next sentence while this one plays, so it
+        // follows without a synthesis pause.
+        if self.tts_engine == TtsEngine::Kokoro
+            && let Some(text) = next
+        {
+            self.tts.send(tts::Command::Preload { text });
+        }
         self.update_tts_bar();
     }
 
