@@ -16,6 +16,8 @@ pub struct Theming {
     desktop: Theme,
     /// A book's own theme, worn while it's open.
     book: Option<(String, Theme)>,
+    /// Omarchy's Glassy Windows: see-through surfaces, blurred by the compositor.
+    glassy: bool,
     provider: gtk::CssProvider,
 }
 
@@ -32,7 +34,9 @@ impl Theming {
                 gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1,
             );
         }
-        let theming = Theming { fingerprint: sources.fingerprint(), sources, desktop: theme, book: None, provider };
+        let glassy = sources.glassy();
+        let theming =
+            Theming { fingerprint: sources.fingerprint(), sources, desktop: theme, book: None, glassy, provider };
         theming.apply();
         theming
     }
@@ -40,6 +44,11 @@ impl Theming {
     /// What the window wears now: the book's theme, or the desktop's.
     pub fn theme(&self) -> &Theme {
         self.book.as_ref().map(|(_, t)| t).unwrap_or(&self.desktop)
+    }
+
+    /// Whether Omarchy's Glassy Windows is on.
+    pub fn glassy(&self) -> bool {
+        self.glassy
     }
 
     /// Wear a book's theme (`None`: the desktop's). `true` if anything changed.
@@ -58,16 +67,18 @@ impl Theming {
             Mode::Dark => adw::ColorScheme::ForceDark,
             Mode::Light => adw::ColorScheme::ForceLight,
         });
-        self.provider.load_from_string(&chrome_css(theme));
+        self.provider.load_from_string(&chrome_css(theme, self.glassy));
     }
 
-    /// Re-read the desktop theme if it moved. `true` when it did.
+    /// Re-read the desktop theme and its window glass if they moved. `true`
+    /// when either did.
     fn poll(&mut self) -> bool {
         let fingerprint = self.sources.fingerprint();
         if fingerprint == self.fingerprint {
             return false;
         }
         self.fingerprint = fingerprint;
+        self.glassy = self.sources.glassy();
         // A theme switch rewrites several files; a half-written palette parses
         // to defaults, and the next tick picks up the finished one.
         if let Some(theme) = self.sources.load() {
@@ -76,13 +87,13 @@ impl Theming {
             if let Some((id, _)) = self.book.take() {
                 self.book = themes::load(&id, &self.sources.shell_text()).map(|t| (id, t));
             }
-            self.apply();
         }
+        self.apply();
         true
     }
 
     /// Poll on a timer and call `changed` after each restyle.
-    pub fn follow(theming: &Rc<RefCell<Theming>>, changed: impl Fn(&Theme) + 'static) {
+    pub fn follow(theming: &Rc<RefCell<Theming>>, changed: impl Fn() + 'static) {
         let theming = Rc::downgrade(theming);
         glib::timeout_add_local(Duration::from_millis(500), move || {
             let Some(theming) = theming.upgrade() else {
@@ -90,7 +101,7 @@ impl Theming {
             };
             let moved = theming.borrow_mut().poll();
             if moved {
-                changed(theming.borrow().theme());
+                changed();
             }
             glib::ControlFlow::Continue
         });

@@ -15,7 +15,6 @@ use omaread_core::library::{self, Book, Paths};
 use omaread_core::lookup::{self as lookups, LookupResult};
 use omaread_core::prefs::ReaderPrefs;
 use omaread_core::speed::{ReadingSpeed, format_minutes};
-use omaread_core::theme::Theme;
 
 use crate::annotations_view::{AnnotationsPanel, NoteEditor, SelectionAction, SelectionBar, SelectionInfo};
 use crate::help_view::HelpView;
@@ -477,9 +476,9 @@ impl Window {
         win.install_keys();
         Theming::follow(&win.theming, {
             let win = Rc::downgrade(&win);
-            move |theme| {
+            move || {
                 if let Some(win) = win.upgrade() {
-                    win.push_palette(theme);
+                    win.push_palette();
                 }
             }
         });
@@ -602,7 +601,7 @@ impl Window {
         self.book_prefs.take();
         self.reader.close();
         if self.theming.borrow_mut().set_book_theme(None) {
-            self.push_palette(&self.theming.borrow().theme().clone());
+            self.push_palette();
         }
         self.window.set_title(Some("Omaread"));
         self.stack.set_visible_child_name(LIBRARY);
@@ -633,16 +632,17 @@ impl Window {
         }
     }
 
-    fn push_palette(&self, theme: &Theme) {
-        let palette = serde_json::to_string(&theme.book_palette()).unwrap_or_default();
+    fn push_palette(&self) {
+        let theming = self.theming.borrow();
+        let palette = serde_json::to_string(&theming.theme().book_palette(theming.glassy())).unwrap_or_default();
+        drop(theming);
         self.reader.call("setPalette", &palette);
     }
 
     fn on_event(&self, event: Event) {
         match event {
             Event::Ready => {
-                let theme = self.theming.borrow().theme().clone();
-                self.push_palette(&theme);
+                self.push_palette();
                 self.reader.call("setPrefs", &serde_json::to_string(&self.effective_prefs()).unwrap_or_default());
             }
             Event::BookReady { toc, .. } => {
@@ -858,8 +858,7 @@ impl Window {
         self.reader.call("setPrefs", &serde_json::to_string(&prefs).unwrap_or_default());
         let changed = self.theming.borrow_mut().set_book_theme(prefs.theme.as_deref());
         if changed {
-            let theme = self.theming.borrow().theme().clone();
-            self.push_palette(&theme);
+            self.push_palette();
         }
     }
 

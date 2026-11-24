@@ -11,7 +11,10 @@
 
 Omaread wears your Omarchy theme and follows it live: colours from
 `colors.toml`, sizes and control states from the theme's `shell.toml`, drawn
-by the same rules the Omarchy shell uses. Books are laid out by
+by the same rules the Omarchy shell uses. It also follows the window opacity
+setting under Appearance > Windows: with Glassy Windows on, its surfaces turn
+see-through and the compositor blurs the desktop behind them. Books are laid
+out by
 [foliate-js](https://github.com/johnfactotum/foliate-js), the engine behind
 Foliate, inside a WebKitGTK view; everything else is Rust and GTK4.
 

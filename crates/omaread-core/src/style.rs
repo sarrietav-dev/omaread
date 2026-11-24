@@ -8,11 +8,19 @@
 
 use std::fmt::Write as _;
 
-use crate::theme::Theme;
+use crate::theme::{Theme, GLASS_ALPHA};
 
-pub fn chrome_css(t: &Theme) -> String {
+/// The chrome's stylesheet. When Omarchy's Glassy Windows is on, every surface
+/// the CSS paints carries [`GLASS_ALPHA`] instead of the palette's solid
+/// background, so the compositor's blur shows through and stacked panels stay
+/// readable. The book page is cleared separately (see `book_palette`).
+pub fn chrome_css(t: &Theme, glassy: bool) -> String {
     let fg = t.foreground;
     let bg = t.background;
+    let bg_css = if glassy { bg.alpha(GLASS_ALPHA) } else { bg.to_string() };
+    // Full-page surfaces stay clear in glassy mode so the window paints the
+    // single frosted layer; panels drawn over them stack their own alpha.
+    let page_bg = if glassy { "transparent".to_string() } else { bg_css.clone() };
     let c = &t.controls;
 
     let caption = t.font_px(0.833);
@@ -32,15 +40,15 @@ pub fn chrome_css(t: &Theme) -> String {
 
     let mut css = String::new();
     let named = [
-        ("window_bg_color", bg.to_string()),
+        ("window_bg_color", bg_css.clone()),
         ("window_fg_color", fg.to_string()),
-        ("view_bg_color", bg.to_string()),
+        ("view_bg_color", bg_css.clone()),
         ("view_fg_color", fg.to_string()),
-        ("headerbar_bg_color", bg.to_string()),
+        ("headerbar_bg_color", bg_css.clone()),
         ("headerbar_fg_color", fg.to_string()),
-        ("popover_bg_color", bg.to_string()),
+        ("popover_bg_color", bg_css.clone()),
         ("popover_fg_color", fg.to_string()),
-        ("dialog_bg_color", bg.to_string()),
+        ("dialog_bg_color", bg_css.clone()),
         ("dialog_fg_color", fg.to_string()),
         ("card_bg_color", fg.alpha(c.normal_fill_alpha)),
         ("card_fg_color", fg.to_string()),
@@ -57,7 +65,7 @@ pub fn chrome_css(t: &Theme) -> String {
         css,
         r#"
 window.omaread {{
-  background-color: {bg};
+  background-color: {bg_css};
   color: {fg};
   font-family: monospace;
   font-size: {body}px;
@@ -68,14 +76,14 @@ window.omaread * {{ border-radius: 0; }}
   font-size: {body_small}px;
   color: {muted};
   padding: {sm}px {row_x}px;
-  background-color: {bg};
+  background-color: {bg_css};
   border-top: {hairline}px solid {rule};
 }}
 .reader-status .section {{ color: {fg}; }}
 .reader-status .numeric {{ font-feature-settings: "tnum"; }}
 
 .card {{
-  background-color: {bg};
+  background-color: {bg_css};
   color: {fg};
   border: {hairline}px solid {accent};
   padding: {popup}px;
@@ -108,7 +116,7 @@ window.omaread * {{ border-radius: 0; }}
 .empty .gap {{ margin-top: {lg}px; }}
 
 .toast {{
-  background-color: {bg};
+  background-color: {bg_css};
   color: {fg};
   border: {hairline}px solid {accent};
   padding: {md}px {row_x}px;
@@ -197,7 +205,7 @@ button.swatch.green {{ background-color: {hl_green}; }}
 button.swatch.blue {{ background-color: {hl_blue}; }}
 button.swatch.magenta {{ background-color: {hl_magenta}; }}
 button.swatch:hover {{ border-color: {fg}; }}
-button.swatch.active {{ border: 2px solid {accent_text}; box-shadow: 0 0 0 1px {bg}; }}
+button.swatch.active {{ border: 2px solid {accent_text}; box-shadow: 0 0 0 1px {bg_css}; }}
 entry.selection-note {{
   background-color: {normal_fill};
   color: {fg};
@@ -250,7 +258,7 @@ list.annotation-list .swatch-underline, list.annotation-list .swatch-squiggly,
 list.annotation-list .swatch-strikethrough {{ border-left-color: {muted}; }}
 .annotations-panel {{ min-width: {panel_wide}px; }}
 label.tts-bar {{
-  background-color: {bg};
+  background-color: {bg_css};
   color: {fg};
   border: {hairline}px solid {accent};
   padding: {xs}px {row_x}px;
@@ -258,7 +266,7 @@ label.tts-bar {{
   font-size: {caption}px;
 }}
 .speech-player {{
-  background-color: {bg};
+  background-color: {bg_css};
   border-top: {hairline}px solid {rule};
   padding: {md}px {row_x}px;
 }}
@@ -298,7 +306,7 @@ popover.speech-presets {{
   box-shadow: none;
 }}
 popover.speech-presets > contents {{
-  background-color: {bg};
+  background-color: {bg_css};
   border: {hairline}px solid {accent};
   box-shadow: none;
   padding: {xs}px;
@@ -405,7 +413,7 @@ list.search-list > row:selected b {{ color: {accent_text}; }}
 .help .what {{ color: {fg}; }}
 
 /* Library */
-.library, .library-main, .library-side {{ background-color: {bg}; color: {fg}; }}
+.library, .library-main, .library-side {{ background-color: {page_bg}; color: {fg}; }}
 .library-side {{
   min-width: {rail}px;
   border-right: {hairline}px solid {rule};
@@ -524,6 +532,8 @@ progressbar.book-progress > trough > progress {{
         muted = t.muted,
         accent = t.accent,
         surface = t.surface,
+        bg_css = bg_css,
+        page_bg = page_bg,
         bg_alpha = bg.alpha(0.6),
         xs = t.space(3.0),
         rail = t.space(200.0),
@@ -559,7 +569,7 @@ mod tests {
     #[test]
     fn redefines_the_platform_colours_from_the_theme() {
         let t = Theme::from_omarchy("x", "background = \"#282828\"\nforeground = \"#d4be98\"\naccent = \"#7daea3\"", "");
-        let css = chrome_css(&t);
+        let css = chrome_css(&t, false);
         assert!(css.contains("@define-color window_bg_color #282828;"));
         assert!(css.contains("@define-color accent_bg_color #7daea3;"));
         assert!(css.contains("font-size: 12px"));
@@ -569,6 +579,21 @@ mod tests {
     #[test]
     fn sizes_follow_the_shell_base_size() {
         let t = Theme::from_omarchy("x", "background = \"#000000\"", "[font]\nbase-size = 16\n");
-        assert!(chrome_css(&t).contains("font-size: 16px"));
+        assert!(chrome_css(&t, false).contains("font-size: 16px"));
+    }
+
+    #[test]
+    fn glassy_surfaces_are_see_through() {
+        let t = Theme::from_omarchy("x", "background = \"#282828\"\nforeground = \"#d4be98\"", "");
+        let glass = chrome_css(&t, true);
+        assert!(glass.contains("@define-color window_bg_color rgba(40, 40, 40, 0.650);"));
+        assert!(glass.contains("window.omaread {\n  background-color: rgba(40, 40, 40, 0.650);"));
+        // Panels stack their alpha over the window's, staying readable.
+        assert!(glass.contains(".card {\n  background-color: rgba(40, 40, 40, 0.650);"));
+        // The library leaves the single frosted layer to the window.
+        assert!(glass.contains(".library, .library-main, .library-side { background-color: transparent;"));
+        assert!(!glass.contains("#282828"));
+        // Opaque mode keeps solid fills.
+        assert!(chrome_css(&t, false).contains("background-color: #282828"));
     }
 }

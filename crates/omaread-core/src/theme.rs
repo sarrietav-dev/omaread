@@ -78,44 +78,71 @@ pub struct Theme {
     pub controls: Controls,
 }
 
-/// Where Omarchy keeps the live theme.
+/// The opacity Omarchy gives see-through windows when Glassy Windows is on:
+/// the same 0.65 its terminals wear, so a frosted window reads like the rest
+/// of the desktop. The compositor blurs whatever shows through.
+pub const GLASS_ALPHA: f64 = 0.65;
+
+/// Where Omarchy keeps the live theme and its window toggles.
 #[derive(Debug, Clone)]
 pub struct Sources {
     pub colors: PathBuf,
     pub shell: PathBuf,
     pub name: PathBuf,
+    /// `window-glassy.lua`: present while Appearance > Windows > Window
+    /// Opacity is Glassy Windows.
+    pub glassy: PathBuf,
 }
 
 impl Sources {
     pub fn under_home(home: &Path) -> Sources {
-        let current = home.join(".local/state/omarchy/current");
+        let state = home.join(".local/state");
+        let current = state.join("omarchy/current");
         Sources {
             colors: current.join("theme/colors.toml"),
             shell: current.join("theme/shell.toml"),
             name: current.join("theme.name"),
+            glassy: state.join("omarchy/toggles/hypr/window-glassy.lua"),
         }
     }
 
     /// `OMAREAD_THEME_HOME` stands in for `$HOME`, so a theme can be tried
     /// without switching the desktop's.
     pub fn from_env() -> Sources {
-        let home = std::env::var_os("OMAREAD_THEME_HOME")
+        let overridden = std::env::var_os("OMAREAD_THEME_HOME");
+        let home = overridden
+            .clone()
             .or_else(|| std::env::var_os("HOME"))
             .map(PathBuf::from)
             .unwrap_or_default();
-        Sources::under_home(&home)
+        let mut sources = Sources::under_home(&home);
+        // `omarchy-hyprland-window-transparency` keeps its toggles under
+        // $XDG_STATE_HOME, which may not be ~/.local/state.
+        if overridden.is_none()
+            && let Some(state) = std::env::var_os("XDG_STATE_HOME").filter(|s| !s.is_empty()).map(PathBuf::from)
+        {
+            sources.glassy = state.join("omarchy/toggles/hypr/window-glassy.lua");
+        }
+        sources
     }
 
     pub fn available(&self) -> bool {
         self.colors.is_file()
     }
 
-    /// Changes whenever the desktop theme does.
+    /// Whether Omarchy's Glassy Windows is on. Opaque and Transparent both
+    /// paint an opaque window, so only this toggle changes the app's colours.
+    pub fn glassy(&self) -> bool {
+        self.glassy.is_file()
+    }
+
+    /// Changes whenever the desktop theme or its window glass does.
     pub fn fingerprint(&self) -> Option<u64> {
         let colors = std::fs::read(&self.colors).ok()?;
         let shell = std::fs::read(&self.shell).unwrap_or_default();
         let name = std::fs::read(&self.name).unwrap_or_default();
-        Some(fnv1a([&colors[..], &shell[..], &name[..]]))
+        let glassy = [self.glassy() as u8];
+        Some(fnv1a([&colors[..], &shell[..], &name[..], &glassy[..]]))
     }
 
     /// The desktop's shell.toml, for sizing a theme that isn't the desktop's.
@@ -247,11 +274,12 @@ impl Theme {
         (px * self.spacing_scale).round().max(0.0) as u32
     }
 
-    /// What the book's stylesheet needs from the theme.
-    pub fn book_palette(&self) -> BookPalette {
+    /// What the book's stylesheet needs from the theme. In glassy mode the
+    /// page is left clear so the window's frosted background shows through.
+    pub fn book_palette(&self, glassy: bool) -> BookPalette {
         BookPalette {
             mode: self.mode,
-            bg: self.background.to_string(),
+            bg: if glassy { "transparent".into() } else { self.background.to_string() },
             fg: self.foreground.to_string(),
             link: self.accent.lifted(self.background, self.foreground, 4.5).to_string(),
             muted: self.muted.to_string(),
@@ -328,5 +356,27 @@ magenta = "#d3869b"
         let t = Theme::from_omarchy("x", GRUVBOX, "[font\nbase-size = ");
         assert_eq!(t.font_base, 12.0);
         assert_eq!(t.controls, Controls::default());
+    }
+
+    #[test]
+    fn the_glassy_toggle_is_part_of_the_theme_fingerprint() {
+        let home = tempfile::tempdir().unwrap();
+        let theme = home.path().join(".local/state/omarchy/current/theme");
+        std::fs::create_dir_all(&theme).unwrap();
+        std::fs::write(theme.join("colors.toml"), GRUVBOX).unwrap();
+        let sources = Sources::under_home(home.path());
+
+        assert!(!sources.glassy());
+        let solid = sources.fingerprint();
+
+        let toggle = home.path().join(".local/state/omarchy/toggles/hypr/window-glassy.lua");
+        std::fs::create_dir_all(toggle.parent().unwrap()).unwrap();
+        std::fs::write(&toggle, "").unwrap();
+
+        assert!(sources.glassy());
+        assert_ne!(sources.fingerprint(), solid);
+        // The page is left clear so the window's glass shows through.
+        assert_eq!(sources.load().unwrap().book_palette(true).bg, "transparent");
+        assert_eq!(sources.load().unwrap().book_palette(false).bg, "#282828");
     }
 }
