@@ -1,2 +1,3 @@
 /target
 /video
+packaging/aur/*/*.tar.gz
