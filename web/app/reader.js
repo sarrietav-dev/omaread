@@ -9,6 +9,7 @@ import * as CFI from '../foliate-js/epubcfi.js'
 import { BODY_PARAGRAPH, markPublisherHeadings } from './typography.js'
 import { colorCSS } from './colors.js'
 import { installSentenceSegmenter } from './sentences.js'
+import { resolveDocumentViewportUnits } from './viewport-units.js'
 
 const emit = msg => globalThis.webkit.messageHandlers.omaread.postMessage(JSON.stringify(msg))
 
@@ -303,6 +304,9 @@ const open = async file => {
         emit({ type: 'external-link', href: e.detail.href })
     })
     view.addEventListener('load', ({ detail: { doc, index } }) => {
+        // Before the first layout: in scrolled flow a vh-sized element would
+        // otherwise grow the iframe that defines the vh (endless blank page).
+        resolveDocumentViewportUnits(doc, innerWidth, innerHeight)
         markPublisherHeadings(doc, book.toc)
         doc.addEventListener('pointerup', () => setTimeout(() => {
             const sel = doc.getSelection()
