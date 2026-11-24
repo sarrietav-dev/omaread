@@ -64,9 +64,11 @@ folders = ["~/Books", "/mnt/nas/books"]
   searches of your own.
 - **Read aloud.** Kokoro by default, through a local Kokoro-FastAPI server:
   one sentence at a time with the sentence highlighted, turning pages and
-  moving through chapters on its own. A compact player provides playback,
-  sentence, speed and voice controls; resuming starts the current sentence
-  again. Piper still works through
+  moving through chapters on its own. Audio plays as the server makes it, the
+  next sentences are ready before they are needed, and stopping and starting
+  again resumes at the sentence you stopped on. A compact player provides
+  playback, sentence, speed and voice controls. Roman numerals read as
+  numbers (`Part I` is "part one"). Piper still works through
   speech-dispatcher if you set `[tts] engine = "piper"`.
 - **Follows your theme live.** Any installed Omarchy theme can be the app's,
   or one book's.
@@ -224,11 +226,12 @@ docker run -p 8880:8880 ghcr.io/remsky/kokoro-fastapi-cpu:latest
 ```
 
 then press `s` in a book. One sentence is synthesized at a time, played as
-it arrives, and highlighted. The next sentence is made while the current one
-plays, and when the last sentence of a paragraph starts, the first sentence
-of the next paragraph is prepared as well. It turns pages and moves through
-chapters on its own. Voice and speed are remembered; speed changes in 0.05×
-steps, and clicking the speed value offers presets from 0.5× to 4×.
+it arrives, and highlighted. The next sentences are made while the current
+one plays, and a paragraph's first sentence is fetched as the paragraph
+starts, so playback joins without a synthesis pause. It turns pages and moves
+through chapters on its own. Voice and speed are remembered; speed changes in
+0.05× steps, and clicking the speed value offers presets from 0.5× to 4×.
+`Esc` stops; the next `s` resumes at the sentence you stopped on.
 
 The server is configurable in `~/.config/omaread/config.toml` (the engine is
 chosen when the app starts):

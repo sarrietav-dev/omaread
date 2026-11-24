@@ -9,6 +9,7 @@ import * as CFI from '../foliate-js/epubcfi.js'
 import { BODY_PARAGRAPH, markPublisherHeadings } from './typography.js'
 import { colorCSS } from './colors.js'
 import { installSentenceSegmenter } from './sentences.js'
+import { readingOrder } from './sections.js'
 import { resolveDocumentViewportUnits } from './viewport-units.js'
 
 const emit = msg => globalThis.webkit.messageHandlers.omaread.postMessage(JSON.stringify(msg))
@@ -31,11 +32,13 @@ let searchToken = 0
 
 const TTS_HIGHLIGHT = 'omaread-tts'
 let ttsSession = null
-// One block is looked at ahead, so its first sentence can be synthesized
-// while the current block's last sentence is still playing. The iterator is
-// one block ahead until that sentence is requested, which is why prev() below
-// skips a step when this is set.
+// One block is looked at ahead as soon as a block starts, so its first
+// sentence can be synthesized while the current block plays. The peek walks
+// back afterwards, so the iterator stays on the block being read.
 let ttsAhead = null
+// The sentence being read, kept so stopping and starting again resumes there
+// instead of at the top of the page.
+let ttsRange = null
 
 const ttsClearHighlight = () => {
     for (const { doc } of view?.renderer?.getContents?.() ?? [])
@@ -43,6 +46,7 @@ const ttsClearHighlight = () => {
 }
 
 const ttsHighlight = range => {
+    ttsRange = range.cloneRange()
     view.renderer.scrollToAnchor?.(range, true)
     const win = range.startContainer?.ownerDocument?.defaultView
     if (!win?.CSS?.highlights || !win.Highlight) return
@@ -78,15 +82,71 @@ const sentencesOf = ssml => {
         .filter(p => /[\p{L}\p{N}]/u.test(p.text))
 }
 
+// The last sentence read, if it belongs to the document on screen.
+const ttsRangeHere = () =>
+    Boolean(ttsRange?.startContainer?.isConnected) &&
+    ttsRange.startContainer.ownerDocument === view.renderer?.getContents?.()[0]?.doc
+
+// The range for a stored CFI, going there first when its section is not the
+// one on screen.
+const ttsRangeOfCfi = async (cfi, session) => {
+    let resolved
+    try {
+        resolved = view.resolveCFI(cfi)
+    } catch {
+        return null
+    }
+    if (!resolved || typeof resolved.anchor !== 'function') return null
+    const here = () => view.renderer.getContents().find(c => c.index === resolved.index)
+    let contents = here()
+    if (!contents) {
+        try {
+            await view.goTo(cfi)
+        } catch {
+            return null
+        }
+        if (session !== ttsSession) return null
+        contents = here()
+    }
+    if (!contents) return null
+    try {
+        return resolved.anchor(contents.doc)
+    } catch {
+        return null
+    }
+}
+
+// Sections in the order the TOC lists them; null when the book's TOC cannot
+// say (then foliate-js's spine order is all there is). A book's spine can be
+// wrong: this one file has chapter 5 between Part I and chapter 1.
+const chapterOrder = () => {
+    const { book } = view ?? {}
+    if (!book?.sections) return null
+    const order = readingOrder(book.toc, href => book.resolveHref?.(href), book.sections.length)
+    // Sections marked linear="no" are not part of the reading sequence.
+    return order?.filter(index => book.sections[index]?.linear !== 'no') ?? null
+}
+
+// One section forward (+1) or back (-1); false when there is nowhere to go.
+const stepChapter = async dir => {
+    const r = view?.renderer
+    if (!r) return false
+    const before = r.getContents?.()[0]?.index
+    const order = chapterOrder()
+    const at = order ? order.indexOf(before) : -1
+    if (at < 0) await (dir > 0 ? r.nextSection?.() : r.prevSection?.())
+    else {
+        const index = order[at + dir]
+        if (index == null) return false
+        await r.goTo({ index })
+    }
+    const after = r.getContents?.()[0]?.index
+    return after != null && after !== before
+}
+
 // Into the next chapter; false at the end of the book.
 const ttsNextSection = async () => {
-    const r = view.renderer
-    const before = r.getContents?.()[0]?.index
-    await r.nextSection?.()
-    const after = r.getContents?.()[0]?.index
-    // At the end of a book some renderers wrap back to the first section;
-    // that is the end of the reading, not a section to continue into.
-    if (after == null || after === before || after < before) return false
+    if (!await stepChapter(1)) return false
     await ttsInit()
     return true
 }
@@ -382,8 +442,8 @@ globalThis.omaread = {
     },
     next: () => view?.next(),
     prev: () => view?.prev(),
-    nextSection: () => view?.renderer?.nextSection?.(),
-    prevSection: () => view?.renderer?.prevSection?.(),
+    nextSection: () => stepChapter(1),
+    prevSection: () => stepChapter(-1),
     first: () => view?.renderer?.firstSection?.(),
     last: () => view?.renderer?.lastSection?.(),
     goTo: target => view?.goTo(target),
@@ -410,32 +470,50 @@ globalThis.omaread = {
         selection?.range?.startContainer?.ownerDocument?.getSelection()?.removeAllRanges()
         selection = null
     },
-    async ttsStart({ fromSelection = false, session } = {}) {
+    async ttsStart({ fromSelection = false, session, resumeCfi = null } = {}) {
         ttsSession = session
         ttsAhead = null
+        // After a stop, resume at the sentence last read. A fresh open has no
+        // such position, so it starts at the saved reading location. Do this
+        // before initTTS: finding the CFI may move to another section.
+        let range = fromSelection ? selection?.range : null
+        if (!range && resumeCfi) range = await ttsRangeOfCfi(resumeCfi, session)
+        if (session !== ttsSession) return
         await ttsInit()
         if (session !== ttsSession) return
-        const range = fromSelection ? selection?.range : view.lastLocation?.range
-        // Starting at the visible page, not the start of the section, so
-        // stopping and starting again does not send the reader backwards.
+        if (!range && !fromSelection && ttsRangeHere()) range = ttsRange
+        if (!range) range = view.lastLocation?.range
         const ssml = range ? view.tts.from(range) : view.tts.start()
         omaread.clearSelection()
         await ttsEmit(ssml, session)
     },
-    // Look one block ahead without leaving this section. Emitted as a
-    // `tts-ahead` block; Rust keeps it and preloads its first sentence.
-    // Rust has started reading the block it peeked; it is no longer ahead.
+    // Rust has started reading the block it peeked; make that block current,
+    // which also gives it back its sentence ranges for the highlight.
     ttsConsumeAhead() {
+        if (!ttsAhead) return
         ttsAhead = null
+        view.tts.next()
     },
     ttsPeek() {
         const session = ttsSession
         if (session == null || ttsAhead) return
-        let ssml = view.tts.next()
         // Skip blocks with nothing to say, but never cross into the next
         // section here: that would move the page before it is being read.
-        for (let guard = 0; ssml != null && !sentencesOf(ssml).length && guard < 200; guard++)
-            ssml = view.tts.next()
+        let ssml = null
+        let steps = 0
+        for (; steps < 200; steps++) {
+            const next = view.tts.next()
+            if (next == null) break
+            ssml = next
+            if (sentencesOf(next).length) {
+                steps++
+                break
+            }
+        }
+        // foliate-js keeps the ranges for the block it built last. Walking
+        // back to the block being read keeps its marks highlightable; the
+        // peeked block is rebuilt when it is consumed.
+        for (let i = 0; i < steps; i++) view.tts.prev()
         if (session !== ttsSession || ssml == null) return
         const sentences = sentencesOf(ssml)
         if (!sentences.length) return
@@ -445,12 +523,7 @@ globalThis.omaread = {
     async ttsNext() {
         const session = ttsSession
         if (session == null) return
-        if (ttsAhead) {
-            const sentences = ttsAhead
-            ttsAhead = null
-            emit({ type: 'tts-block', session, sentences })
-            return
-        }
+        ttsAhead = null
         await ttsInit()
         if (session !== ttsSession) return
         const ssml = view.tts.next()
@@ -467,17 +540,19 @@ globalThis.omaread = {
     async ttsPrev() {
         const session = ttsSession
         if (session == null) return
-        // A peek left the iterator one block ahead; step back over it first.
-        if (ttsAhead) {
-            ttsAhead = null
-            view.tts.prev()
-        }
+        ttsAhead = null
         await ttsInit()
         if (session !== ttsSession) return
         await ttsEmit(view.tts.prev() ?? view.tts.start(), session)
     },
     ttsMark(mark) {
-        if (mark != null) view?.tts?.setMark(mark)
+        if (mark == null) return
+        view?.tts?.setMark(mark)
+        // Tell Rust where the sentence is, so a stop can resume here.
+        if (!ttsRange?.startContainer?.isConnected) return
+        const index = view.renderer.getContents().find(c => c.doc === ttsRange.startContainer.ownerDocument)?.index
+        if (index == null) return
+        emit({ type: 'tts-position', cfi: view.getCFI(index, ttsRange) })
     },
     ttsStop() {
         ttsSession = null

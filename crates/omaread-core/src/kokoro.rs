@@ -1,6 +1,7 @@
 //! Kokoro TTS through an OpenAI-compatible local server (Kokoro-FastAPI by
 //! default). Speech comes back as raw 24 kHz mono PCM, ready to play.
 
+use std::io::Read;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -24,6 +25,7 @@ struct SpeechRequest<'a> {
     voice: &'a str,
     response_format: &'a str,
     speed: f32,
+    stream: bool,
 }
 
 #[derive(Deserialize)]
@@ -60,14 +62,16 @@ fn agent(timeout: Duration) -> ureq::Agent {
         .into()
 }
 
-/// Synthesize one sentence. Returns interleaved i16 samples at [`SAMPLE_RATE`].
-pub fn speak(config: &TtsConfig, text: &str, voice: &str, speed: f32) -> Result<Vec<i16>, String> {
+/// Open the speech request. `stream` asks the server to send the audio as it
+/// is made; the caller reads the body at its own pace.
+fn open(config: &TtsConfig, text: &str, voice: &str, speed: f32, stream: bool) -> Result<ureq::Body, String> {
     let body = serde_json::to_vec(&SpeechRequest {
         model: &config.model,
         input: text,
         voice,
         response_format: "pcm",
         speed: speed.clamp(0.25, 4.0),
+        stream,
     })
     .map_err(|e| e.to_string())?;
     let url = speech_url(&config.url);
@@ -81,8 +85,52 @@ pub fn speak(config: &TtsConfig, text: &str, voice: &str, speed: f32) -> Result<
         let detail = response.body_mut().read_to_string().unwrap_or_default();
         return Err(format!("Kokoro: {status} {}", detail.trim()));
     }
-    let bytes = response.body_mut().read_to_vec().map_err(|e| format!("Kokoro: {e}"))?;
-    Ok(bytes.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])).collect())
+    Ok(response.into_body())
+}
+
+fn pcm(bytes: &[u8]) -> Vec<i16> {
+    bytes.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])).collect()
+}
+
+/// Synthesize one sentence. Returns interleaved i16 samples at [`SAMPLE_RATE`].
+pub fn speak(config: &TtsConfig, text: &str, voice: &str, speed: f32) -> Result<Vec<i16>, String> {
+    let mut body = open(config, text, voice, speed, false)?;
+    let bytes = body.read_to_vec().map_err(|e| format!("Kokoro: {e}"))?;
+    Ok(pcm(&bytes))
+}
+
+/// Synthesize one sentence, handing each piece of audio to `on_chunk` as the
+/// server makes it. Returns the whole sentence, for the cache.
+pub fn speak_stream(
+    config: &TtsConfig,
+    text: &str,
+    voice: &str,
+    speed: f32,
+    mut on_chunk: impl FnMut(Vec<i16>),
+) -> Result<Vec<i16>, String> {
+    let mut body = open(config, text, voice, speed, true)?;
+    let mut reader = body.as_reader();
+    let mut all = Vec::new();
+    let mut pending: Vec<u8> = Vec::new();
+    let mut buf = [0u8; 16 * 1024];
+    loop {
+        let n = reader.read(&mut buf).map_err(|e| format!("Kokoro: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        pending.extend_from_slice(&buf[..n]);
+        let even = pending.len() & !1;
+        if even == 0 {
+            continue;
+        }
+        let samples = pcm(&pending[..even]);
+        pending.drain(..even);
+        all.extend_from_slice(&samples);
+        if !samples.is_empty() {
+            on_chunk(samples);
+        }
+    }
+    Ok(all)
 }
 
 /// The server's voices, or Kokoro's built-in list when it can't be reached.
@@ -154,6 +202,7 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::net::TcpListener;
+    use std::sync::mpsc;
 
     #[test]
     fn urls_grow_from_a_base_or_keep_a_full_endpoint() {
@@ -215,6 +264,37 @@ mod tests {
             }
         }
         String::from_utf8_lossy(&data).to_string()
+    }
+
+    #[test]
+    fn speak_stream_hands_audio_over_in_pieces() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = read_request(&mut stream);
+            assert!(request.contains("\"stream\":true"), "{request}");
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Type: audio/pcm\r\nConnection: close\r\n\r\n",
+                )
+                .unwrap();
+            // Split the samples at odd byte boundaries, as a chunked body may.
+            let pcm: Vec<u8> = [1i16, 2, 3].iter().flat_map(|s| s.to_le_bytes()).collect();
+            for part in [&pcm[..3], &pcm[3..5], &pcm[5..]] {
+                stream.write_all(format!("{:x}\r\n", part.len()).as_bytes()).unwrap();
+                stream.write_all(part).unwrap();
+                stream.write_all(b"\r\n").unwrap();
+            }
+            stream.write_all(b"0\r\n\r\n").unwrap();
+        });
+        let (chunks_tx, chunks_rx) = mpsc::channel();
+        let config = TtsConfig { url: format!("http://{address}/v1"), ..TtsConfig::default() };
+        let samples = speak_stream(&config, "Hello.", "af_bella", 1.0, |chunk| chunks_tx.send(chunk).unwrap()).unwrap();
+        assert_eq!(samples, vec![1, 2, 3]);
+        let chunks: Vec<Vec<i16>> = chunks_rx.try_iter().collect();
+        assert_eq!(chunks.concat(), vec![1, 2, 3]);
+        server.join().unwrap();
     }
 
     #[test]

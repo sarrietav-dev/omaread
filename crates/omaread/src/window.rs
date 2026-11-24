@@ -14,6 +14,7 @@ use omaread_core::command::{self, Command, ExportFormat};
 use omaread_core::library::{self, Book, Paths};
 use omaread_core::lookup::{self as lookups, LookupResult};
 use omaread_core::prefs::ReaderPrefs;
+use omaread_core::speech;
 use omaread_core::speed::{ReadingSpeed, format_minutes};
 
 use crate::annotations_view::{AnnotationsPanel, NoteEditor, SelectionAction, SelectionBar, SelectionInfo};
@@ -65,6 +66,8 @@ pub struct Window {
     tts_engine: TtsEngine,
     speech: RefCell<Option<Speech>>,
     speech_error: RefCell<Option<String>>,
+    /// The CFI of the sentence last read aloud, to resume after a stop.
+    tts_position: RefCell<Option<String>>,
     tts_bar: Rc<SpeechPlayer>,
     speech_seq: Cell<u64>,
     /// The voice panel: the list of voices and the pace.
@@ -126,8 +129,11 @@ struct Speech {
     started: bool,
     sentences: Vec<Sentence>,
     index: usize,
-    /// The next block, asked for when this one's last sentence starts, so
-    /// its first sentence can be synthesized during that sentence.
+    /// Which block this is, for ordering prefetches: the next block's first
+    /// sentence is fetched early but made after this block's own.
+    block: u64,
+    /// The next block, asked for when this block arrives, so its first
+    /// sentence can be synthesized while this whole block plays.
     ahead: Vec<Sentence>,
     peeked: bool,
     /// The sentence the engine is reading (our number for it).
@@ -330,6 +336,7 @@ impl Window {
             tts_bar,
             speech_seq: Cell::new(0),
             speech_error: RefCell::new(None),
+            tts_position: RefCell::default(),
             voice,
             voices: RefCell::default(),
             voices_loaded: Cell::new(false),
@@ -549,6 +556,7 @@ impl Window {
 
         self.window.set_title(Some(&book.title));
         self.stop_speech();
+        self.tts_position.take();
         self.toc.close();
         self.toc.set_items(&[]);
         self.toc_items.borrow_mut().clear();
@@ -584,6 +592,7 @@ impl Window {
         self.close_overlays();
         self.lookup.close();
         self.stop_speech();
+        self.tts_position.take();
         self.save_progress();
         self.save_speed();
         self.toc.close();
@@ -675,14 +684,22 @@ impl Window {
                 if let Some(s) = speech.as_mut().filter(|s| s.session == session) {
                     s.sentences = sentences;
                     s.index = 0;
+                    s.block += 1;
                     s.ahead.clear();
                     s.peeked = false;
                 } else {
                     return;
                 }
                 let playing = speech.as_ref().is_some_and(|s| s.playing);
+                if playing && let Some(s) = speech.as_mut() {
+                    // Peek now, so the next block's first sentence is made
+                    // while this whole block plays. Its prefetch is ordered
+                    // after this block's own sentences.
+                    s.peeked = true;
+                }
                 drop(speech);
                 if playing {
+                    self.reader.call("ttsPeek", "");
                     self.speak_current();
                 }
             }
@@ -694,16 +711,21 @@ impl Window {
                     };
                     s.peeked = false;
                     s.ahead = sentences;
-                    s.ahead.first().map(|sentence| sentence.text.clone())
+                    s.ahead.first().map(|sentence| (speech::for_speech(&sentence.text), (s.block + 1, 0)))
                 };
-                // The last sentence is still playing; make the next block's
-                // first sentence ready before it ends.
-                if let Some(text) = preload {
-                    self.tts.send(tts::Command::Preload { text });
+                // Fetched early, made after this block's remaining sentences.
+                if let Some((text, order)) = preload {
+                    self.tts.send(tts::Command::Preload { text, order });
+                }
+            }
+            Event::TtsPosition { cfi } => {
+                if self.speech.borrow().is_some() {
+                    self.tts_position.replace(Some(cfi));
                 }
             }
             Event::TtsEnd { session } => {
                 if !self.speech.borrow().as_ref().is_some_and(|s| s.session == session) { return; }
+                self.tts_position.take();
                 self.stop_speech();
                 self.show_toast("Finished reading aloud", false);
             }
@@ -1049,6 +1071,11 @@ impl Window {
                     Next::Sentence => self.speak_current(),
                     Next::Ahead => {
                         self.reader.call("ttsConsumeAhead", "");
+                        if let Some(s) = self.speech.borrow_mut().as_mut() {
+                            s.block += 1;
+                            s.peeked = true;
+                        }
+                        self.reader.call("ttsPeek", "");
                         self.speak_current();
                     }
                     Next::Page => self.reader.call("ttsNext", ""),
@@ -1108,18 +1135,24 @@ impl Window {
             self.tts.send(tts::Command::ListVoices);
         }
         let seq = self.next_speech_seq();
+        self.tts.send(tts::Command::ForgetQueued);
         self.speech.replace(Some(Speech {
             session: seq,
             playing: true,
             started: false,
             sentences: Vec::new(),
             index: 0,
+            block: 0,
             ahead: Vec::new(),
             peeked: false,
             seq,
         }));
         self.close_selection();
-        self.reader.call("ttsStart", &serde_json::json!({ "fromSelection": from_selection, "session": seq }).to_string());
+        let resume = self.tts_position.borrow().clone();
+        self.reader.call(
+            "ttsStart",
+            &serde_json::json!({ "fromSelection": from_selection, "session": seq, "resumeCfi": resume }).to_string(),
+        );
         self.update_tts_bar();
     }
 
@@ -1137,25 +1170,34 @@ impl Window {
             let Some(sentence) = s.sentences.get(s.index) else { return };
             s.seq = self.next_speech_seq();
             s.started = false;
-            let end = s.index + 1 >= s.sentences.len();
-            let peek = end && !s.peeked;
+            // Peeked as soon as a block arrives; this catches a block that
+            // was loaded while paused and is only now being read.
+            let peek = !s.peeked;
             if peek {
                 s.peeked = true;
             }
-            let next = s.sentences.get(s.index + 1).map(|sentence| sentence.text.clone());
-            (sentence.mark.clone(), sentence.text.clone(), s.seq, next, peek)
+            // Two sentences of lookahead: a CPU Kokoro server can take longer
+            // to make a sentence than to play the one before it, so it should
+            // always have work queued.
+            let next: Vec<(String, (u64, usize))> = s
+                .sentences
+                .iter()
+                .enumerate()
+                .skip(s.index + 1)
+                .take(2)
+                .map(|(i, sentence)| (speech::for_speech(&sentence.text), (s.block, i)))
+                .collect();
+            (sentence.mark.clone(), speech::for_speech(&sentence.text), s.seq, next, peek)
         };
         self.reader.call("ttsMark", &serde_json::to_string(&mark).unwrap_or_default());
         self.tts.send(tts::Command::Speak { seq, text });
-        // Kokoro can make the next sentence while this one plays, so it
-        // follows without a synthesis pause.
-        if self.tts_engine == TtsEngine::Kokoro
-            && let Some(text) = next
-        {
-            self.tts.send(tts::Command::Preload { text });
+        // Kokoro can make the next sentences while this one plays, so they
+        // follow without a synthesis pause.
+        if self.tts_engine == TtsEngine::Kokoro {
+            for (text, order) in next {
+                self.tts.send(tts::Command::Preload { text, order });
+            }
         }
-        // The last sentence of a block is the moment to fetch the next one,
-        // so its first sentence is ready when this one ends.
         if peek {
             self.reader.call("ttsPeek", "");
         }
@@ -1168,6 +1210,7 @@ impl Window {
             return;
         };
         self.tts.send(tts::Command::Stop);
+        self.tts.send(tts::Command::ForgetQueued);
         let target = index as i64 + delta as i64;
         if target < 0 {
             self.reader.call("ttsPrev", "");
@@ -1218,6 +1261,7 @@ impl Window {
         self.speech_error.take();
         if self.speech.take().is_some() {
             self.tts.send(tts::Command::Stop);
+            self.tts.send(tts::Command::ForgetQueued);
             self.reader.call("ttsStop", "");
         }
         self.tts_bar.root.set_visible(false);

@@ -60,6 +60,8 @@ pub enum Event {
         session: u64,
         sentences: Vec<Sentence>,
     },
+    /// The CFI of the sentence being read, so a stop can resume there.
+    TtsPosition { cfi: String },
     /// Nothing left to read.
     TtsEnd { session: u64 },
     SearchResults {

@@ -20,7 +20,11 @@ pub enum Command {
     /// Speak a sentence; `seq` comes back in its events.
     Speak { seq: u64, text: String },
     /// Synthesize a sentence ahead of time, so the next `Speak` is instant.
-    Preload { text: String },
+    /// `order` is (block, sentence): the nearer sentence is made first, even
+    /// when the next block's first sentence was asked for early.
+    Preload { text: String, order: (u64, usize) },
+    /// Drop sentences queued for synthesis but not started (a jump or a step).
+    ForgetQueued,
     Stop,
     Rate(i32),
     Voice(String),
@@ -30,7 +34,18 @@ pub enum Command {
     Daemon(ssip::Event),
     /// From the prefetch thread: a sentence ready to cache.
     Preloaded { text: String, voice: String, rate: i32, result: Result<Vec<i16>, String> },
-    Synthesized { generation: u64, seq: u64, result: Result<Vec<i16>, String> },
+    /// From the synth thread: a piece of the sentence, played as it arrives.
+    Audio { generation: u64, seq: u64, samples: Vec<i16> },
+    /// From the synth thread: the whole sentence, for the cache, after the
+    /// pieces have gone out.
+    Streamed {
+        generation: u64,
+        seq: u64,
+        text: String,
+        voice: String,
+        rate: i32,
+        result: Result<Vec<i16>, String>,
+    },
 }
 
 #[derive(Debug)]
@@ -78,7 +93,13 @@ fn worker(
 // --- Kokoro -----------------------------------------------------------------
 
 enum Playback {
+    /// All the audio at once (a cached or prefetched sentence).
     Play { seq: u64, samples: Vec<i16> },
+    /// A streamed sentence begins; chunks follow.
+    Start { seq: u64 },
+    Chunk { seq: u64, samples: Vec<i16> },
+    /// No more chunks; end when the queue drains.
+    Finish { seq: u64 },
     Stop,
 }
 
@@ -106,72 +127,145 @@ fn kokoro_worker(
 
     let mut rate = 0;
     let mut voice = if config.voice.is_empty() { "af_heart".to_string() } else { config.voice.clone() };
-    // One sentence of lookahead: synthesized while the current one plays.
-    let mut cache: Option<Cached> = None;
-    let mut prefetching: Option<String> = None;
-    let mut queued: Option<String> = None;
+    // Sentences synthesized while an earlier one plays. More than one slot
+    // because two sentences are requested at a time; a single slot would
+    // throw away the one that plays next.
+    let mut cache: Vec<Cached> = Vec::new();
+    // The prefetch in flight, with the voice and rate it was made for.
+    let mut prefetching: Option<(String, String, i32)> = None;
+    let mut queued: Vec<((u64, usize), String)> = Vec::new();
+    // A `Speak` whose sentence is already being prefetched: play that audio
+    // when it lands instead of asking the server for it a second time.
+    let mut waiting: Option<(u64, String)> = None;
+    // True while the sentence being spoken is still being made. Nothing for
+    // later starts until its audio is ready, so the server works on it first.
+    let mut speaking = false;
     let mut generation = 0u64;
 
-    while let Ok(command) = rx.recv() {
+    loop {
+        // Prefetch only when the current sentence has its audio. Asking for
+        // the next one earlier would make the current one wait on the server.
+        if !speaking
+            && prefetching.is_none()
+            && !queued.is_empty()
+            && let (_, next) = queued.remove(0)
+            && start_prefetch(&tx, &config, next.clone(), voice.clone(), rate)
+        {
+            prefetching = Some((next, voice.clone(), rate));
+        }
+        let Ok(command) = rx.recv() else { break };
         match command {
             Command::Speak { seq, text } => {
                 generation = generation.wrapping_add(1);
-                if let Some(cached) = cache.take().filter(|c| c.text == text && c.voice == voice && c.rate == rate) {
-                    let _ = play_tx.send(Playback::Play { seq, samples: cached.samples });
+                if let Some(samples) = cached_samples(&cache, &text, &voice, rate) {
+                    let _ = play_tx.send(Playback::Play { seq, samples });
+                    speaking = false;
+                } else if prefetching.as_ref().is_some_and(|(t, v, r)| t == &text && v == &voice && *r == rate) {
+                    waiting = Some((seq, text));
+                    speaking = true;
                 } else {
-                    let (tx, config, voice, generation) = (tx.clone(), config.clone(), voice.clone(), generation);
+                    speaking = true;
+                    // Start playing as the server makes the audio, instead of
+                    // waiting for the whole sentence.
+                    let _ = play_tx.send(Playback::Start { seq });
+                    let (tx, config, stream_voice, generation) = (tx.clone(), config.clone(), voice.clone(), generation);
+                    let said = text.clone();
                     std::thread::spawn(move || {
-                        let result = kokoro::speak(&config, &text, &voice, kokoro::speed(rate));
-                        let _ = tx.send(Command::Synthesized { generation, seq, result });
+                        let chunks = tx.clone();
+                        let result = kokoro::speak_stream(&config, &text, &stream_voice, kokoro::speed(rate), |samples| {
+                            let _ = chunks.send(Command::Audio { generation, seq, samples });
+                        });
+                        let _ = tx.send(Command::Streamed { generation, seq, text: said, voice: stream_voice, rate, result });
                     });
                 }
             }
-            Command::Synthesized { generation: got, seq, result } => {
-                if got != generation { continue; }
+            Command::Audio { generation: got, seq, samples } => {
+                if got == generation {
+                    let _ = play_tx.send(Playback::Chunk { seq, samples });
+                }
+            }
+            Command::Streamed { generation: got, seq, text, voice: got_voice, rate: got_rate, result } => {
                 match result {
-                    Ok(samples) => { let _ = play_tx.send(Playback::Play { seq, samples }); }
-                    Err(e) => { let _ = events.send_blocking(Event::SpeechError(seq, e)); }
+                    Ok(samples) => {
+                        // Kept so pause and resume replay it instead of asking
+                        // the server to say it again. A stale stream (stopped
+                        // mid-sentence) still fills the cache.
+                        if got_voice == voice && got_rate == rate {
+                            remember(&mut cache, Cached { text, voice: got_voice, rate: got_rate, samples });
+                        }
+                        if got == generation {
+                            speaking = false;
+                            let _ = play_tx.send(Playback::Finish { seq });
+                        }
+                    }
+                    Err(e) if got == generation => {
+                        speaking = false;
+                        let _ = play_tx.send(Playback::Stop);
+                        let _ = events.send_blocking(Event::SpeechError(seq, e));
+                    }
+                    Err(_) => {}
                 }
             }
-            Command::Preload { text } => {
-                if cache.as_ref().is_some_and(|c| c.text == text && c.voice == voice && c.rate == rate) {
+            Command::Preload { text, order } => {
+                if has_cached(&cache, &text, &voice, rate)
+                    || prefetching.as_ref().is_some_and(|(t, _, _)| t == &text)
+                    || queued.iter().any(|(_, q)| q == &text)
+                {
                     continue;
                 }
-                if prefetching.as_deref() == Some(text.as_str()) {
-                    continue;
-                }
-                if prefetching.is_some() {
-                    queued = Some(text);
-                    continue;
-                }
-                if start_prefetch(&tx, &config, text.clone(), voice.clone(), rate) {
-                    prefetching = Some(text);
+                queued.push((order, text));
+                queued.sort_by_key(|(order, _)| *order);
+                // Full: give up the sentence furthest from the reading.
+                if queued.len() > QUEUED_LIMIT {
+                    queued.pop();
                 }
             }
+            Command::ForgetQueued => queued.clear(),
             Command::Preloaded { text, voice: got_voice, rate: got_rate, result } => {
-                if prefetching.as_deref() == Some(text.as_str()) {
+                if prefetching.as_ref().is_some_and(|(t, _, _)| t == &text) {
                     prefetching = None;
                 }
-                if got_voice == voice && got_rate == rate && let Ok(samples) = result {
-                    cache = Some(Cached { text, voice: got_voice, rate: got_rate, samples });
-                }
-                if let Some(next) = queued.take()
-                    && start_prefetch(&tx, &config, next.clone(), voice.clone(), rate)
-                {
-                    prefetching = Some(next);
+                match result {
+                    Ok(samples) if got_voice == voice && got_rate == rate => {
+                        if let Some((seq, _)) = waiting.take_if(|(_, want)| want == &text) {
+                            remember(
+                                &mut cache,
+                                Cached { text: text.clone(), voice: got_voice.clone(), rate: got_rate, samples: samples.clone() },
+                            );
+                            speaking = false;
+                            let _ = play_tx.send(Playback::Play { seq, samples });
+                        } else {
+                            remember(&mut cache, Cached { text, voice: got_voice, rate: got_rate, samples });
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        if let Some((seq, _)) = waiting.take_if(|(_, want)| want == &text) {
+                            speaking = false;
+                            let _ = events.send_blocking(Event::SpeechError(seq, e));
+                        }
+                    }
                 }
             }
             Command::Stop => {
                 generation = generation.wrapping_add(1);
+                waiting = None;
+                speaking = false;
                 let _ = play_tx.send(Playback::Stop);
             }
             Command::Rate(r) => {
                 rate = r;
-                cache = None;
+                generation = generation.wrapping_add(1);
+                cache.clear();
+                queued.clear();
+                waiting = None;
             }
             Command::Voice(v) => {
                 voice = v;
-                cache = None;
+                generation = generation.wrapping_add(1);
+                cache.clear();
+                queued.clear();
+                waiting = None;
             }
             // Kokoro picks its language from the voice id.
             Command::Language(_) => {}
@@ -183,6 +277,26 @@ fn kokoro_worker(
             }
             Command::Daemon(_) => {}
         }
+    }
+}
+
+/// Sentences kept ready to play, and how many may wait their turn.
+const CACHE_LIMIT: usize = 6;
+const QUEUED_LIMIT: usize = 3;
+
+fn cached_samples(cache: &[Cached], text: &str, voice: &str, rate: i32) -> Option<Vec<i16>> {
+    cache.iter().find(|c| c.text == text && c.voice == voice && c.rate == rate).map(|c| c.samples.clone())
+}
+
+fn has_cached(cache: &[Cached], text: &str, voice: &str, rate: i32) -> bool {
+    cache.iter().any(|c| c.text == text && c.voice == voice && c.rate == rate)
+}
+
+fn remember(cache: &mut Vec<Cached>, entry: Cached) {
+    cache.retain(|c| !(c.text == entry.text && c.voice == entry.voice && c.rate == entry.rate));
+    cache.push(entry);
+    if cache.len() > CACHE_LIMIT {
+        cache.remove(0);
     }
 }
 
@@ -199,72 +313,133 @@ fn start_prefetch(tx: &mpsc::Sender<Command>, config: &TtsConfig, text: String, 
         .is_ok()
 }
 
-/// Owns the audio device. A new sentence replaces the old one, and an END
-/// event goes out when the samples have actually finished playing. The device
-/// is opened on the first sentence, not when the app starts.
+/// Owns the audio device. A sentence's audio is appended as it arrives, and
+/// an END event goes out when the queue has drained. The device is opened on
+/// the first sentence, not when the app starts.
 fn playback(rx: mpsc::Receiver<Playback>, events: async_channel::Sender<Event>) {
     let mut _sink: Option<rodio::MixerDeviceSink> = None;
     let mut player: Option<rodio::Player> = None;
+    // The sentence being played, and whether more of it is still arriving.
+    let mut current: Option<(u64, bool)> = None;
+    let mut started = false;
 
-    let mut pending = None;
     loop {
-        let command = match pending.take() {
-            Some(command) => command,
-            None => match rx.recv() {
-                Ok(command) => command,
-                Err(_) => break,
-            },
-        };
-        match command {
-            Playback::Stop => {
-                if let Some(player) = &player {
-                    player.stop();
-                }
+        // While a sentence plays, poll for its next chunk; when idle, wait.
+        let command = if current.is_some() {
+            match rx.recv_timeout(Duration::from_millis(15)) {
+                Ok(command) => Some(command),
+                Err(mpsc::RecvTimeoutError::Timeout) => None,
+                Err(mpsc::RecvTimeoutError::Disconnected) => return,
             }
-            Playback::Play { seq, samples } => {
-                if player.is_none() {
-                    match rodio::DeviceSinkBuilder::open_default_sink() {
-                        Ok(mut opened) => {
-                            opened.log_on_drop(false);
-                            let connected = rodio::Player::connect_new(opened.mixer());
-                            if cfg!(debug_assertions) && std::env::var_os("OMAREAD_TTS_MUTE").is_some() {
-                                connected.set_volume(0.0);
-                            }
-                            _sink = Some(opened);
-                            player = Some(connected);
+        } else {
+            match rx.recv() {
+                Ok(command) => Some(command),
+                Err(_) => return,
+            }
+        };
+        if let Some(command) = command {
+            match command {
+                Playback::Stop => {
+                    if let Some(player) = &player {
+                        player.stop();
+                    }
+                    current = None;
+                    started = false;
+                }
+                Playback::Play { seq, samples } => {
+                    let Some(playing) = ensure_player(&mut _sink, &mut player, &events, seq) else {
+                        current = None;
+                        started = false;
+                        continue;
+                    };
+                    playing.stop();
+                    append(playing, samples);
+                    let _ = events.send_blocking(Event::Started(seq));
+                    current = Some((seq, false));
+                    started = true;
+                }
+                Playback::Start { seq } => {
+                    let Some(playing) = ensure_player(&mut _sink, &mut player, &events, seq) else {
+                        current = None;
+                        started = false;
+                        continue;
+                    };
+                    playing.stop();
+                    current = Some((seq, true));
+                    started = false;
+                }
+                Playback::Chunk { seq, samples } => {
+                    if current.is_some_and(|(playing, _)| playing == seq) {
+                        if !started {
+                            let _ = events.send_blocking(Event::Started(seq));
+                            started = true;
                         }
-                        Err(e) => {
-                            let _ = events.send_blocking(Event::SpeechError(seq, format!("Audio output isn't available: {e}")));
-                            continue;
+                        if let Some(playing) = &player {
+                            append(playing, samples);
                         }
                     }
                 }
-                let Some(player) = player.as_ref() else { continue };
-                player.stop();
-                if !samples.is_empty() {
-                    let channels = NonZero::new(1).expect("one channel");
-                    let rate = NonZero::new(kokoro::SAMPLE_RATE).expect("a sample rate");
-                    let samples: Vec<f32> = samples.iter().map(|&s| s as f32 / 32_768.0).collect();
-                    player.append(rodio::buffer::SamplesBuffer::new(channels, rate, samples));
-                }
-                let _ = events.send_blocking(Event::Started(seq));
-                loop {
-                    if player.empty() {
-                        let _ = events.send_blocking(Event::Ended(seq));
-                        break;
-                    }
-                    match rx.try_recv() {
-                        Ok(command) => {
-                            pending = Some(command);
-                            break;
-                        }
-                        Err(mpsc::TryRecvError::Empty) => std::thread::sleep(Duration::from_millis(20)),
-                        Err(mpsc::TryRecvError::Disconnected) => return,
+                Playback::Finish { seq } => {
+                    if let Some((playing, streaming)) = current.as_mut()
+                        && *playing == seq
+                    {
+                        *streaming = false;
                     }
                 }
             }
         }
+        // A stream that finished without making a sound still has to move the
+        // reading on.
+        if let Some((seq, false)) = current
+            && !started
+        {
+            let _ = events.send_blocking(Event::Ended(seq));
+            current = None;
+        }
+        if let Some((seq, false)) = current
+            && player.as_ref().is_some_and(|playing| playing.empty())
+        {
+            let _ = events.send_blocking(Event::Ended(seq));
+            current = None;
+            started = false;
+        }
     }
+}
+
+fn ensure_player<'a>(
+    sink: &'a mut Option<rodio::MixerDeviceSink>,
+    player: &'a mut Option<rodio::Player>,
+    events: &async_channel::Sender<Event>,
+    seq: u64,
+) -> Option<&'a rodio::Player> {
+    if player.is_none() {
+        match rodio::DeviceSinkBuilder::open_default_sink() {
+            Ok(mut opened) => {
+                opened.log_on_drop(false);
+                let connected = rodio::Player::connect_new(opened.mixer());
+                if cfg!(debug_assertions) && std::env::var_os("OMAREAD_TTS_MUTE").is_some() {
+                    connected.set_volume(0.0);
+                }
+                *sink = Some(opened);
+                *player = Some(connected);
+            }
+            Err(e) => {
+                let _ = events.send_blocking(Event::SpeechError(seq, format!("Audio output isn't available: {e}")));
+                return None;
+            }
+        }
+    }
+    player.as_ref()
+}
+
+fn append(player: &rodio::Player, samples: Vec<i16>) {
+    if samples.is_empty() {
+        return;
+    }
+    let channels = NonZero::new(1).expect("one channel");
+    let rate = NonZero::new(kokoro::SAMPLE_RATE).expect("a sample rate");
+    let samples: Vec<f32> = samples.iter().map(|&s| s as f32 / 32_768.0).collect();
+    player.append(rodio::buffer::SamplesBuffer::new(channels, rate, samples));
 }
 
 // --- speech-dispatcher (Piper and other modules) ----------------------------
@@ -333,7 +508,11 @@ fn speechd_worker(rx: mpsc::Receiver<Command>, tx: mpsc::Sender<Command>, events
                 sentences.insert(id, seq);
                 let _ = events.send_blocking(Event::Started(seq));
             }),
-            Command::Preload { .. } | Command::Preloaded { .. } | Command::Synthesized { .. } => Ok(()),
+            Command::Preload { .. }
+            | Command::Preloaded { .. }
+            | Command::Audio { .. }
+            | Command::Streamed { .. }
+            | Command::ForgetQueued => Ok(()),
             Command::Stop => {
                 sentences.clear();
                 c.stop()
@@ -369,8 +548,115 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
 
+    fn read_request(stream: &mut std::net::TcpStream) -> String {
+        let mut data = Vec::new();
+        let mut buf = [0u8; 1024];
+        loop {
+            let n = stream.read(&mut buf).unwrap_or(0);
+            if n == 0 {
+                break;
+            }
+            data.extend_from_slice(&buf[..n]);
+            if let Some(end) = data.windows(4).position(|w| w == b"\r\n\r\n") {
+                let head = String::from_utf8_lossy(&data[..end]).to_ascii_lowercase();
+                let length: usize = head
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length:").map(|n| n.trim().parse().unwrap_or(0)))
+                    .unwrap_or(0);
+                if data.len() >= end + 4 + length {
+                    break;
+                }
+            }
+        }
+        String::from_utf8_lossy(&data).to_string()
+    }
+
+    fn request_input(request: &str) -> String {
+        let body = request.split_once("\r\n\r\n").map(|(_, body)| body).unwrap_or_default();
+        serde_json::from_str::<serde_json::Value>(body)
+            .ok()
+            .and_then(|v| v.get("input").and_then(|input| input.as_str()).map(str::to_string))
+            .unwrap_or_default()
+    }
+
     #[test]
-    fn stop_discards_late_synthesized_audio() {
+    fn resuming_a_sentence_does_not_synthesize_it_again() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (count_tx, count_rx) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            let mut count = 0;
+            while std::time::Instant::now() < deadline {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let _ = read_request(&mut stream);
+                        count += 1;
+                        let _ = count_tx.send(count);
+                        let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n\0\0");
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(Duration::from_millis(10)),
+                    Err(_) => break,
+                }
+            }
+            count
+        });
+        let (events_tx, _events_rx) = async_channel::unbounded();
+        let config = TtsConfig { url: format!("http://{addr}"), ..TtsConfig::default() };
+        let tts = Tts::start(events_tx, config);
+        tts.send(Command::Speak { seq: 1, text: "Hello there.".into() });
+        assert_eq!(count_rx.recv_timeout(Duration::from_secs(5)).unwrap(), 1);
+        // Let the samples reach the cache before the second ask.
+        std::thread::sleep(Duration::from_millis(200));
+        tts.send(Command::Stop);
+        tts.send(Command::Speak { seq: 2, text: "Hello there.".into() });
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(count_rx.try_recv().is_err(), "the second Speak asked for the sentence again");
+        drop(tts);
+        assert_eq!(server.join().unwrap(), 1);
+    }
+
+    #[test]
+    fn the_nearest_sentence_is_synthesized_first() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (seen_tx, seen_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let mut order = Vec::new();
+            for i in 0..3 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request = read_request(&mut stream);
+                let input = request_input(&request);
+                order.push(input.clone());
+                seen_tx.send(input).unwrap();
+                if i == 0 {
+                    // Hold the first request until the others are queued.
+                    release_rx.recv().unwrap();
+                }
+                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n\0\0");
+            }
+            order
+        });
+        let (events_tx, _events_rx) = async_channel::unbounded();
+        let config = TtsConfig { url: format!("http://{addr}"), ..TtsConfig::default() };
+        let tts = Tts::start(events_tx, config);
+        tts.send(Command::Preload { text: "Block one, first.".into(), order: (1, 0) });
+        assert_eq!(seen_rx.recv_timeout(Duration::from_secs(5)).unwrap(), "Block one, first.");
+        // The next block's first sentence is known early, but the rest of
+        // this block is needed sooner.
+        tts.send(Command::Preload { text: "Block two, first.".into(), order: (2, 0) });
+        tts.send(Command::Preload { text: "Block one, second.".into(), order: (1, 1) });
+        release_tx.send(()).unwrap();
+        assert_eq!(seen_rx.recv_timeout(Duration::from_secs(5)).unwrap(), "Block one, second.");
+        assert_eq!(seen_rx.recv_timeout(Duration::from_secs(5)).unwrap(), "Block two, first.");
+        let order = server.join().unwrap();
+        assert_eq!(order, ["Block one, first.", "Block one, second.", "Block two, first."]);
+    }
+
+    #[test]
+    fn stop_discards_late_streamed_audio() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let (arrived_tx, arrived_rx) = mpsc::channel();
@@ -394,8 +680,19 @@ mod tests {
         tts.send(Command::Stop);
         tts.send(Command::Speak { seq: 2, text: "Second sentence".into() });
         release_tx.send(()).unwrap();
-        let event = events_rx.recv_blocking().unwrap();
-        assert!(matches!(event, Event::SpeechError(2, _)), "unexpected event: {event:?}");
+        // The first request's audio arrives after Stop and must not speak.
+        // Look for the server's own error for the second request; a machine
+        // without an audio device also reports that separately.
+        let mut server_error = None;
+        while let Ok(event) = events_rx.recv_blocking() {
+            if let Event::SpeechError(2, message) = event
+                && message.starts_with("Kokoro")
+            {
+                server_error = Some(message);
+                break;
+            }
+        }
+        assert!(server_error.is_some(), "the second request's error never arrived");
         server.join().unwrap();
     }
 }

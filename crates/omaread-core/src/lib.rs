@@ -13,6 +13,7 @@ pub mod kokoro;
 pub mod library;
 pub mod lookup;
 pub mod prefs;
+pub mod speech;
 pub mod speed;
 pub mod ssip;
 pub mod style;
