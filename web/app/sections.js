@@ -47,3 +47,37 @@ export const readingOrder = (toc, resolveHref, count) => {
     order.push(...unlisted)
     return order
 }
+
+// Labels that name the wrapper around the text, so `gg` and `G` don't land on
+// a cover or an index. Publishers word these differently; only the usual words
+// are caught, and a miss just keeps the old behaviour.
+const FRONT_MATTER = /^(cover|half[- ]?title|title[- ]?page|titlepage|copyright|imprint|colophon|dedication|epigraph|contents|table of contents|toc|front matter|also by|by the author|praise)\b/i
+const BACK_MATTER = /^(index|notes?|endnotes|bibliography|references|sources|suggested reading|further reading|further resources|acknowledg\w*|about the authors?|colophon|back cover|credits|permissions)\b/i
+
+// The first and last sections of the text itself.
+//
+// toc: foliate's nested TOC ({ label, href, subitems }).
+// resolveHref: href → { index } for the book, or null.
+// order: spine indices in reading order, as `readingOrder` gives them.
+// Sections the TOC never names (a cover, a colophon) don't count: they ride
+// along with the section before them, as they do for chapter steps. Returns
+// the ends of `order` when the TOC names nothing that reads as text.
+export const textEdges = (toc, resolveHref, order) => {
+    const labels = new Map()
+    const walk = items => {
+        for (const item of items ?? []) {
+            const index = item?.href ? resolveHref?.(item.href)?.index : undefined
+            if (Number.isInteger(index) && item.label && !labels.has(index)) labels.set(index, item.label)
+            walk(item?.subitems)
+        }
+    }
+    walk(toc)
+    const text = order.filter(index => {
+        const label = labels.get(index)
+        return label != null && !FRONT_MATTER.test(label) && !BACK_MATTER.test(label)
+    })
+    return {
+        start: text[0] ?? order[0] ?? 0,
+        end: text[text.length - 1] ?? order[order.length - 1] ?? 0,
+    }
+}

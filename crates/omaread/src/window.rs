@@ -715,7 +715,7 @@ impl Window {
                 };
                 // Fetched early, made after this block's remaining sentences.
                 if let Some((text, order)) = preload {
-                    self.tts.send(tts::Command::Preload { text, order });
+                    self.tts.send(tts::Command::Preload { text, order, hold: true });
                 }
             }
             Event::TtsPosition { cfi } => {
@@ -1195,7 +1195,7 @@ impl Window {
         // follow without a synthesis pause.
         if self.tts_engine == TtsEngine::Kokoro {
             for (text, order) in next {
-                self.tts.send(tts::Command::Preload { text, order });
+                self.tts.send(tts::Command::Preload { text, order, hold: false });
             }
         }
         if peek {

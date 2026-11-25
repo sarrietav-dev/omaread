@@ -26,7 +26,7 @@ fn sections(context: Context) -> Vec<(&'static str, Context, Vec<Row>)> {
                 ("Next page", NextPage, &["j", "l", "space", "right", "down", "page_down"]),
                 ("Previous page", PrevPage, &["k", "h", "shift+space", "left", "up", "page_up"]),
                 ("Next chapter", NextSection, &["J", "L"]), ("Previous chapter", PrevSection, &["K", "H"]),
-                ("Start of book", First, &["gg", "home"]), ("End of book", Last, &["G", "end"]),
+                ("Start of the text", First, &["gg", "home"]), ("End of the text", Last, &["G", "end"]),
                 ("Back", Back, &["ctrl+o"]), ("Forward", Forward, &["ctrl+i"]),
                 ("Contents", Toc, &["t"]), ("Search", Search, &["/"]),
                 ("Next search result", NextHit, &["n"]), ("Previous search result", PrevHit, &["N"]),

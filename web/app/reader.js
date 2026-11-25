@@ -9,7 +9,7 @@ import * as CFI from '../foliate-js/epubcfi.js'
 import { BODY_PARAGRAPH, markPublisherHeadings } from './typography.js'
 import { colorCSS } from './colors.js'
 import { installSentenceSegmenter } from './sentences.js'
-import { readingOrder } from './sections.js'
+import { readingOrder, textEdges } from './sections.js'
 import { resolveDocumentViewportUnits } from './viewport-units.js'
 
 const emit = msg => globalThis.webkit.messageHandlers.omaread.postMessage(JSON.stringify(msg))
@@ -116,6 +116,20 @@ const ttsRangeOfCfi = async (cfi, session) => {
     }
 }
 
+// Start at the block that holds the top of the visible page. foliate's
+// own `from` throws when nothing qualifies (a cover with no text, or the
+// last page of a section), so this may come back empty.
+const ttsFrom = range => {
+    if (!range) return null
+    const start = range.cloneRange()
+    start.setEnd(start.startContainer, start.startOffset)
+    try {
+        return view.tts.from(start)
+    } catch {
+        return null
+    }
+}
+
 // Sections in the order the TOC lists them; null when the book's TOC cannot
 // say (then foliate-js's spine order is all there is). A book's spine can be
 // wrong: this one file has chapter 5 between Part I and chapter 1.
@@ -126,6 +140,16 @@ const chapterOrder = () => {
     // Sections marked linear="no" are not part of the reading sequence.
     return order?.filter(index => book.sections[index]?.linear !== 'no') ?? null
 }
+
+// Everything the reader can step through, in reading order.
+const sectionsOf = () => {
+    const sections = view?.book?.sections ?? []
+    const order = chapterOrder() ?? sections.map((_, index) => index)
+    return order.filter(index => sections[index]?.linear !== 'no')
+}
+
+// Where the text starts and ends, for opening a book and for `gg` / `G`.
+const textEdgesHere = () => textEdges(view?.book?.toc, href => view?.book?.resolveHref?.(href), sectionsOf())
 
 // One section forward (+1) or back (-1); false when there is nowhere to go.
 const stepChapter = async dir => {
@@ -409,7 +433,9 @@ const open = async file => {
 
     await view.open(book)
     applyLayout()
-    await view.init({ lastLocation: pendingOpen.lastLocation, showTextStart: !pendingOpen.lastLocation })
+    // With no saved position, open where the text starts instead of on the
+    // cover or the title page.
+    await view.init({ lastLocation: pendingOpen.lastLocation ?? textEdgesHere().start, showTextStart: false })
     emit({
         type: 'book-ready',
         metadata: metadataOf(book),
@@ -444,8 +470,8 @@ globalThis.omaread = {
     prev: () => view?.prev(),
     nextSection: () => stepChapter(1),
     prevSection: () => stepChapter(-1),
-    first: () => view?.renderer?.firstSection?.(),
-    last: () => view?.renderer?.lastSection?.(),
+    first: () => view?.renderer?.goTo?.({ index: textEdgesHere().start }),
+    last: () => view?.renderer?.goTo?.({ index: textEdgesHere().end, anchor: 1 }),
     goTo: target => view?.goTo(target),
     setHighlights(list) {
         for (const a of highlights.values()) view?.deleteAnnotation(a)
@@ -473,19 +499,29 @@ globalThis.omaread = {
     async ttsStart({ fromSelection = false, session, resumeCfi = null } = {}) {
         ttsSession = session
         ttsAhead = null
-        // After a stop, resume at the sentence last read. A fresh open has no
-        // such position, so it starts at the saved reading location. Do this
-        // before initTTS: finding the CFI may move to another section.
-        let range = fromSelection ? selection?.range : null
-        if (!range && resumeCfi) range = await ttsRangeOfCfi(resumeCfi, session)
-        if (session !== ttsSession) return
-        await ttsInit()
-        if (session !== ttsSession) return
-        if (!range && !fromSelection && ttsRangeHere()) range = ttsRange
-        if (!range) range = view.lastLocation?.range
-        const ssml = range ? view.tts.from(range) : view.tts.start()
-        omaread.clearSelection()
-        await ttsEmit(ssml, session)
+        try {
+            // After a stop, resume at the sentence last read. A fresh open has
+            // no such position, so it starts at the saved reading location. Do
+            // this before initTTS: finding the CFI may move to another section.
+            let range = fromSelection ? selection?.range : null
+            if (!range && resumeCfi) range = await ttsRangeOfCfi(resumeCfi, session)
+            if (session !== ttsSession) return
+            await ttsInit()
+            if (session !== ttsSession) return
+            if (!range && !fromSelection && ttsRangeHere()) range = ttsRange
+            if (!range) range = view.lastLocation?.range
+            // A cover or an image-only page has nowhere to start: fall back to
+            // the section's first block, and ttsEmit will walk on from there.
+            const ssml = ttsFrom(range) ?? view.tts.start()
+            omaread.clearSelection()
+            await ttsEmit(ssml, session)
+        } catch (e) {
+            // Never leave the player waiting for words that aren't coming.
+            if (session === ttsSession) {
+                console.error('ttsStart', e)
+                emit({ type: 'tts-end', session })
+            }
+        }
     },
     // Rust has started reading the block it peeked; make that block current,
     // which also gives it back its sentence ranges for the highlight.

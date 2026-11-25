@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readingOrder } from './sections.js'
+import { readingOrder, textEdges } from './sections.js'
 
 // A tiny book: href → spine index, like book.resolveHref.
 const resolver = hrefs => href => {
@@ -59,4 +59,44 @@ test('broken TOC hrefs are ignored', () => {
     const order = readingOrder(toc(['Gone', 'missing.xhtml'], ['One', 'ch1.xhtml'], ['Two', 'ch2.xhtml']),
         resolver(hrefs), hrefs.length)
     assert.deepEqual(order, [0, 1])
+})
+
+// Make It Stick's shape: the cover is not in the TOC, and the index is.
+const frontToBack = () => {
+    const hrefs = ['cover.xhtml', 'halftitle.xhtml', 'titlepage.xhtml', 'copyright.xhtml',
+        'dedication.xhtml', 'contents.xhtml', 'preface.xhtml', 'ch1.xhtml', 'ch2.xhtml',
+        'notes.xhtml', 'reading.xhtml', 'acknowledgments.xhtml', 'index.xhtml']
+    const toc = [
+        ['Half Title', 'halftitle.xhtml'], ['Title Page', 'titlepage.xhtml'],
+        ['Copyright', 'copyright.xhtml'], ['Dedication', 'dedication.xhtml'],
+        ['Contents', 'contents.xhtml'], ['Preface', 'preface.xhtml'],
+        ['1. One', 'ch1.xhtml'], ['2. Two', 'ch2.xhtml'],
+        ['Notes', 'notes.xhtml'], ['Suggested Reading', 'reading.xhtml'],
+        ['Acknowledgments', 'acknowledgments.xhtml'], ['Index', 'index.xhtml'],
+    ].map(([label, href]) => ({ label, href }))
+    return { hrefs, toc }
+}
+
+test('the text starts at the preface and ends before the notes', () => {
+    const { hrefs, toc } = frontToBack()
+    const edges = textEdges(toc, resolver(hrefs), hrefs.map((_, index) => index))
+    // The unnamed cover is skipped, and so is every named part after chapter 2.
+    assert.deepEqual(edges, { start: 6, end: 8 })
+})
+
+test('a TOC that names nothing usable keeps the ends of the book', () => {
+    const hrefs = ['cover.xhtml', 'ch1.xhtml', 'index.xhtml']
+    assert.deepEqual(textEdges(null, resolver(hrefs), [0, 1, 2]), { start: 0, end: 2 })
+    assert.deepEqual(textEdges(toc(['Cover', 'cover.xhtml'], ['Index', 'index.xhtml']),
+        resolver(hrefs), [0, 1, 2]), { start: 0, end: 2 })
+})
+
+test('the reading order, not the spine, decides the text edges', () => {
+    const hrefs = ['ch2.xhtml', 'index.xhtml', 'ch1.xhtml']
+    const order = readingOrder(toc(['1. One', 'ch1.xhtml'], ['2. Two', 'ch2.xhtml'], ['Index', 'index.xhtml']),
+        resolver(hrefs), hrefs.length)
+    assert.deepEqual(order, [2, 0, 1])
+    const edges = textEdges(toc(['1. One', 'ch1.xhtml'], ['2. Two', 'ch2.xhtml'], ['Index', 'index.xhtml']),
+        resolver(hrefs), order)
+    assert.deepEqual(edges, { start: 2, end: 0 })
 })

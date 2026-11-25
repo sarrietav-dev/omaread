@@ -131,7 +131,7 @@ Reading
 | `j` `l` Space → | next page |
 | `k` `h` Shift-Space ← | previous page |
 | `J` `K` / `H` `L` | next / previous chapter |
-| `gg` / `G` | start / end of the book |
+| `gg` / `G` | start / end of the text |
 | `Ctrl-o` / `Ctrl-i` | back / forward |
 | `t` | table of contents (`j`/`k` move, `h`/`l` fold, Enter go) |
 | `/` | search the book (Alt+c case, Alt+w whole words, Alt+d accents) |

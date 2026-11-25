@@ -21,8 +21,10 @@ pub enum Command {
     Speak { seq: u64, text: String },
     /// Synthesize a sentence ahead of time, so the next `Speak` is instant.
     /// `order` is (block, sentence): the nearer sentence is made first, even
-    /// when the next block's first sentence was asked for early.
-    Preload { text: String, order: (u64, usize) },
+    /// when the next block's first sentence was asked for early. `hold` marks
+    /// that next block's first sentence, which has to survive in the cache
+    /// until this block ends however many sentences this block has.
+    Preload { text: String, order: (u64, usize), hold: bool },
     /// Drop sentences queued for synthesis but not started (a jump or a step).
     ForgetQueued,
     Stop,
@@ -33,7 +35,7 @@ pub enum Command {
     /// From the SSIP reader thread.
     Daemon(ssip::Event),
     /// From the prefetch thread: a sentence ready to cache.
-    Preloaded { text: String, voice: String, rate: i32, result: Result<Vec<i16>, String> },
+    Preloaded { text: String, voice: String, rate: i32, hold: bool, result: Result<Vec<i16>, String> },
     /// From the synth thread: a piece of the sentence, played as it arrives.
     Audio { generation: u64, seq: u64, samples: Vec<i16> },
     /// From the synth thread: the whole sentence, for the cache, after the
@@ -108,6 +110,9 @@ struct Cached {
     voice: String,
     rate: i32,
     samples: Vec<i16>,
+    /// The next block's first sentence: kept until it is played, so a long
+    /// block doesn't push it out before the reading reaches it.
+    held: bool,
 }
 
 fn kokoro_worker(
@@ -133,7 +138,7 @@ fn kokoro_worker(
     let mut cache: Vec<Cached> = Vec::new();
     // The prefetch in flight, with the voice and rate it was made for.
     let mut prefetching: Option<(String, String, i32)> = None;
-    let mut queued: Vec<((u64, usize), String)> = Vec::new();
+    let mut queued: Vec<((u64, usize), String, bool)> = Vec::new();
     // A `Speak` whose sentence is already being prefetched: play that audio
     // when it lands instead of asking the server for it a second time.
     let mut waiting: Option<(u64, String)> = None;
@@ -148,8 +153,8 @@ fn kokoro_worker(
         if !speaking
             && prefetching.is_none()
             && !queued.is_empty()
-            && let (_, next) = queued.remove(0)
-            && start_prefetch(&tx, &config, next.clone(), voice.clone(), rate)
+            && let (_, next, hold) = queued.remove(0)
+            && start_prefetch(&tx, &config, next.clone(), voice.clone(), rate, hold)
         {
             prefetching = Some((next, voice.clone(), rate));
         }
@@ -157,7 +162,7 @@ fn kokoro_worker(
         match command {
             Command::Speak { seq, text } => {
                 generation = generation.wrapping_add(1);
-                if let Some(samples) = cached_samples(&cache, &text, &voice, rate) {
+                if let Some(samples) = cached_samples(&mut cache, &text, &voice, rate) {
                     let _ = play_tx.send(Playback::Play { seq, samples });
                     speaking = false;
                 } else if prefetching.as_ref().is_some_and(|(t, v, r)| t == &text && v == &voice && *r == rate) {
@@ -191,7 +196,7 @@ fn kokoro_worker(
                         // the server to say it again. A stale stream (stopped
                         // mid-sentence) still fills the cache.
                         if got_voice == voice && got_rate == rate {
-                            remember(&mut cache, Cached { text, voice: got_voice, rate: got_rate, samples });
+                            remember(&mut cache, Cached { text, voice: got_voice, rate: got_rate, samples, held: false });
                         }
                         if got == generation {
                             speaking = false;
@@ -206,22 +211,22 @@ fn kokoro_worker(
                     Err(_) => {}
                 }
             }
-            Command::Preload { text, order } => {
+            Command::Preload { text, order, hold } => {
                 if has_cached(&cache, &text, &voice, rate)
                     || prefetching.as_ref().is_some_and(|(t, _, _)| t == &text)
-                    || queued.iter().any(|(_, q)| q == &text)
+                    || queued.iter().any(|(_, q, _)| q == &text)
                 {
                     continue;
                 }
-                queued.push((order, text));
-                queued.sort_by_key(|(order, _)| *order);
+                queued.push((order, text, hold));
+                queued.sort_by_key(|(order, _, _)| *order);
                 // Full: give up the sentence furthest from the reading.
                 if queued.len() > QUEUED_LIMIT {
                     queued.pop();
                 }
             }
             Command::ForgetQueued => queued.clear(),
-            Command::Preloaded { text, voice: got_voice, rate: got_rate, result } => {
+            Command::Preloaded { text, voice: got_voice, rate: got_rate, hold, result } => {
                 if prefetching.as_ref().is_some_and(|(t, _, _)| t == &text) {
                     prefetching = None;
                 }
@@ -230,12 +235,18 @@ fn kokoro_worker(
                         if let Some((seq, _)) = waiting.take_if(|(_, want)| want == &text) {
                             remember(
                                 &mut cache,
-                                Cached { text: text.clone(), voice: got_voice.clone(), rate: got_rate, samples: samples.clone() },
+                                Cached {
+                                    text: text.clone(),
+                                    voice: got_voice.clone(),
+                                    rate: got_rate,
+                                    samples: samples.clone(),
+                                    held: false,
+                                },
                             );
                             speaking = false;
                             let _ = play_tx.send(Playback::Play { seq, samples });
                         } else {
-                            remember(&mut cache, Cached { text, voice: got_voice, rate: got_rate, samples });
+                            remember(&mut cache, Cached { text, voice: got_voice, rate: got_rate, samples, held: hold });
                         }
                     }
                     Ok(_) => {}
@@ -284,8 +295,11 @@ fn kokoro_worker(
 const CACHE_LIMIT: usize = 6;
 const QUEUED_LIMIT: usize = 3;
 
-fn cached_samples(cache: &[Cached], text: &str, voice: &str, rate: i32) -> Option<Vec<i16>> {
-    cache.iter().find(|c| c.text == text && c.voice == voice && c.rate == rate).map(|c| c.samples.clone())
+fn cached_samples(cache: &mut [Cached], text: &str, voice: &str, rate: i32) -> Option<Vec<i16>> {
+    let entry = cache.iter_mut().find(|c| c.text == text && c.voice == voice && c.rate == rate)?;
+    // It's the sentence being read now: no longer reserved for the block end.
+    entry.held = false;
+    Some(entry.samples.clone())
 }
 
 fn has_cached(cache: &[Cached], text: &str, voice: &str, rate: i32) -> bool {
@@ -294,21 +308,38 @@ fn has_cached(cache: &[Cached], text: &str, voice: &str, rate: i32) -> bool {
 
 fn remember(cache: &mut Vec<Cached>, entry: Cached) {
     cache.retain(|c| !(c.text == entry.text && c.voice == entry.voice && c.rate == entry.rate));
+    if entry.held {
+        // One block's first sentence is held at a time; a jump or a new block
+        // releases the previous one, so stale holds can't fill the cache.
+        for c in cache.iter_mut() {
+            c.held = false;
+        }
+    }
     cache.push(entry);
-    if cache.len() > CACHE_LIMIT {
-        cache.remove(0);
+    while cache.len() > CACHE_LIMIT {
+        // Drop the oldest sentence that is not held for the next block; the
+        // held one may be many sentences away in a long block.
+        let oldest = cache.iter().position(|c| !c.held).unwrap_or(0);
+        cache.remove(oldest);
     }
 }
 
 /// Synthesize off the command thread so Stop and Rate stay responsive.
-fn start_prefetch(tx: &mpsc::Sender<Command>, config: &TtsConfig, text: String, voice: String, rate: i32) -> bool {
+fn start_prefetch(
+    tx: &mpsc::Sender<Command>,
+    config: &TtsConfig,
+    text: String,
+    voice: String,
+    rate: i32,
+    hold: bool,
+) -> bool {
     let tx = tx.clone();
     let config = config.clone();
     std::thread::Builder::new()
         .name("tts-prefetch".into())
         .spawn(move || {
             let result = kokoro::speak(&config, &text, &voice, kokoro::speed(rate));
-            let _ = tx.send(Command::Preloaded { text, voice, rate, result });
+            let _ = tx.send(Command::Preloaded { text, voice, rate, hold, result });
         })
         .is_ok()
 }
@@ -642,17 +673,41 @@ mod tests {
         let (events_tx, _events_rx) = async_channel::unbounded();
         let config = TtsConfig { url: format!("http://{addr}"), ..TtsConfig::default() };
         let tts = Tts::start(events_tx, config);
-        tts.send(Command::Preload { text: "Block one, first.".into(), order: (1, 0) });
+        tts.send(Command::Preload { text: "Block one, first.".into(), order: (1, 0), hold: false });
         assert_eq!(seen_rx.recv_timeout(Duration::from_secs(5)).unwrap(), "Block one, first.");
         // The next block's first sentence is known early, but the rest of
         // this block is needed sooner.
-        tts.send(Command::Preload { text: "Block two, first.".into(), order: (2, 0) });
-        tts.send(Command::Preload { text: "Block one, second.".into(), order: (1, 1) });
+        tts.send(Command::Preload { text: "Block two, first.".into(), order: (2, 0), hold: true });
+        tts.send(Command::Preload { text: "Block one, second.".into(), order: (1, 1), hold: false });
         release_tx.send(()).unwrap();
         assert_eq!(seen_rx.recv_timeout(Duration::from_secs(5)).unwrap(), "Block one, second.");
         assert_eq!(seen_rx.recv_timeout(Duration::from_secs(5)).unwrap(), "Block two, first.");
         let order = server.join().unwrap();
         assert_eq!(order, ["Block one, first.", "Block one, second.", "Block two, first."]);
+    }
+
+    #[test]
+    fn the_next_blocks_first_sentence_survives_a_long_block() {
+        let cached = |text: &str, held| Cached {
+            text: text.into(),
+            voice: "af_heart".into(),
+            rate: 0,
+            samples: vec![1],
+            held,
+        };
+        let mut cache = Vec::new();
+        remember(&mut cache, cached("next block", true));
+        // A long block: each sentence played is cached, and the held one must
+        // not be the entry dropped when the cache fills.
+        for i in 0..CACHE_LIMIT + 4 {
+            remember(&mut cache, cached(&format!("sentence {i}"), false));
+        }
+        assert!(has_cached(&cache, "next block", "af_heart", 0));
+        assert!(cache.len() <= CACHE_LIMIT);
+        // Once it is spoken it is an ordinary entry again.
+        assert_eq!(cached_samples(&mut cache, "next block", "af_heart", 0), Some(vec![1]));
+        let entry = cache.iter().find(|c| c.text == "next block").unwrap();
+        assert!(!entry.held);
     }
 
     #[test]
