@@ -35,7 +35,7 @@ fn sections(context: Context) -> Vec<(&'static str, Context, Vec<Row>)> {
                 ("Bigger text", Bigger, &["+", "="]), ("Smaller text", Smaller, &["-"]),
                 ("Cycle theme", CycleTheme, &["T"]), ("Status line", ToggleStatus, &["i"]),
                 ("Select text from the keyboard", Visual, &["v"]),
-                ("Follow a link (type its label)", Hints, &["f"]),
+                ("Follow a link or open an image (type its label)", Hints, &["f"]),
                 ("Command palette", CommandLine, &[":"]), ("Help", Help, &["?"]),
                 ("Back to library", Close, &["q"]),
             ]),
@@ -55,6 +55,11 @@ fn sections(context: Context) -> Vec<(&'static str, Context, Vec<Row>)> {
                 ("Move the other end", SwapEnds, &["o"]),
                 ("Select (opens the card)", Open, &["enter", "v"]),
                 ("Copy", Copy, &["y"]), ("Cancel", Close, &["escape", "q"]),
+            ]),
+            ("Image viewer", Context::Image, vec![
+                ("Zoom in / out", Bigger, &["+", "-"]), ("Fit to window", Fit, &["0"]),
+                ("Actual size", ActualSize, &["1"]), ("Move", Move(0, 1), &["h", "j", "k", "l"]),
+                ("Copy image", Copy, &["y"]), ("Close", Close, &["escape", "q"]),
             ]),
             ("Footnote card", Context::Note, vec![
                 ("Go to the note", Open, &["enter"]), ("Copy", Copy, &["y"]),

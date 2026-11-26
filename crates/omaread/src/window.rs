@@ -20,6 +20,7 @@ use omaread_core::speed::{ReadingSpeed, format_minutes};
 use crate::annotations_view::{AnnotationsPanel, NoteEditor, SelectionAction, SelectionBar, SelectionInfo};
 use crate::footnote_view::FootnoteView;
 use crate::help_view::HelpView;
+use crate::image_view::ImageView;
 use crate::keys::{Action, Context, Keymap};
 use crate::library_view::LibraryView;
 use crate::reader::{Event, Location, Reader, Rect, Selection, Sentence};
@@ -128,6 +129,7 @@ pub struct Window {
     footnote: Rc<FootnoteView>,
     /// The page's links are labelled, waiting for one to be typed.
     hints: Cell<bool>,
+    image: Rc<ImageView>,
 }
 
 /// A place to open a book at, from `omaread open`.
@@ -337,6 +339,8 @@ impl Window {
         reader_overlay.add_overlay(&mode_hint);
         let footnote = FootnoteView::new();
         reader_overlay.add_overlay(&footnote.root);
+        let image = ImageView::new();
+        reader_overlay.add_overlay(&image.root);
 
         let stack = gtk::Stack::builder()
             .transition_type(gtk::StackTransitionType::Crossfade)
@@ -429,6 +433,7 @@ impl Window {
             mode_hint,
             footnote,
             hints: Cell::new(false),
+            image,
         });
         if let Some(speed) = win.db.as_ref().and_then(|db| db.setting(SPEED_SETTING).ok().flatten()).and_then(|s| ReadingSpeed::from_setting(&s)) {
             win.speed.set(speed);
@@ -712,6 +717,8 @@ impl Window {
             Context::Settings
         } else if self.annotations_panel.is_open() {
             Context::Annotations
+        } else if self.image.is_open() {
+            Context::Image
         } else if self.hints.get() {
             Context::Hints
         } else if self.footnote.is_open() {
@@ -767,6 +774,12 @@ impl Window {
             }
             Event::Visual { active, text } => self.show_visual(active, &text),
             Event::Hints { active } => self.hints.set(active),
+            Event::Image { data, alt } => {
+                self.close_selection();
+                if let Err(e) = self.image.show(&data, &alt) {
+                    self.show_toast(&e, true);
+                }
+            }
             Event::Footnote { href, text, rect } => {
                 self.close_selection();
                 self.footnote.show(&href, &text, rect, self.page_size());
@@ -1600,6 +1613,7 @@ impl Window {
     /// Every panel and bar over the book, closed.
     fn close_overlays(&self) {
         self.footnote.close();
+        self.image.close();
         self.selection_bar.hide();
         self.note_editor.close();
         self.annotations_panel.close();
@@ -2284,6 +2298,21 @@ impl Window {
             (Context::Hints, Action::Close) => {
                 self.hints.set(false);
                 self.reader.call("hintsCancel", "");
+            }
+            (Context::Image, Action::Move(dx, dy)) => self.image.pan(dx, dy),
+            (Context::Image, Action::Bigger) => self.image.zoom_by(1),
+            (Context::Image, Action::Smaller) => self.image.zoom_by(-1),
+            (Context::Image, Action::Fit) => self.image.fit(),
+            (Context::Image, Action::ActualSize) => self.image.actual_size(),
+            (Context::Image, Action::Copy) => {
+                if let Some(texture) = self.image.texture() {
+                    self.window.clipboard().set_texture(&texture);
+                    self.show_toast("Image copied", false);
+                }
+            }
+            (Context::Image, Action::Close) => {
+                self.image.close();
+                self.reader.view.grab_focus();
             }
             (Context::Note, Action::Move(_, dy)) => self.footnote.scroll(dy),
             (Context::Note, Action::Open) => {

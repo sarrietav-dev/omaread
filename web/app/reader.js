@@ -434,6 +434,58 @@ const showNote = async (book, href, a) => {
     }
 }
 
+// --- Images -----------------------------------------------------------------
+// A click (or a hint) on an image opens it in the native viewer. The page
+// redraws it as a PNG, so GTK only ever decodes one format, whatever the
+// book used (JPEG, GIF, WebP, SVG).
+
+const MAX_IMAGE = 3000
+
+const imageSource = el => {
+    if (el.localName === 'img') return el.currentSrc || el.src
+    if (el.localName === 'image')
+        return el.href?.baseVal || el.getAttribute('href') || el.getAttributeNS('http://www.w3.org/1999/xlink', 'href')
+    return null
+}
+
+const toBase64 = buffer => {
+    const bytes = new Uint8Array(buffer)
+    let binary = ''
+    for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
+    return btoa(binary)
+}
+
+const showImage = async el => {
+    let temporary = null
+    try {
+        // An inline <svg> shows its <image> if it wraps one, else itself.
+        if (el.localName === 'svg') {
+            const inner = el.querySelector('image')
+            if (inner) return showImage(inner)
+            temporary = URL.createObjectURL(new Blob([new XMLSerializer().serializeToString(el)], { type: 'image/svg+xml' }))
+        }
+        const src = temporary ?? new URL(imageSource(el), el.ownerDocument.baseURI).href
+        const img = new Image()
+        img.src = src
+        await img.decode()
+        const w0 = img.naturalWidth || 1200, h0 = img.naturalHeight || 1200
+        const scale = Math.min(1, MAX_IMAGE / Math.max(w0, h0))
+        const canvas = document.createElement('canvas')
+        canvas.width = Math.max(1, Math.round(w0 * scale))
+        canvas.height = Math.max(1, Math.round(h0 * scale))
+        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height)
+        const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'))
+        if (!blob) throw new Error('no PNG')
+        const alt = el.getAttribute('alt') || el.getAttribute('aria-label') || el.closest('figure')?.querySelector('figcaption')?.textContent || ''
+        emit({ type: 'image', data: toBase64(await blob.arrayBuffer()), alt: alt.replace(/\s+/g, ' ').trim() })
+    } catch (e) {
+        console.error('image', e)
+        emit({ type: 'notice', message: 'Could not open this image' })
+    } finally {
+        if (temporary) URL.revokeObjectURL(temporary)
+    }
+}
+
 // --- Link hints -------------------------------------------------------------
 // `f` labels every link on screen; typing a label follows it, through the
 // same click handler the mouse uses (notes open in their card, links out
@@ -445,13 +497,18 @@ let hints = null // { targets: [{ label, el, mark }], typed }
 const hintTargets = () => {
     const found = []
     for (const { doc } of view?.renderer?.getContents?.() ?? []) {
-        for (const el of doc.querySelectorAll('a[href]')) {
+        for (const el of doc.querySelectorAll('a[href], img, svg')) {
+            const image = el.localName !== 'a'
+            // Images inside links are followed as links; nested SVGs once.
+            if (image && (el.closest('a[href]') || el.parentElement?.closest('svg'))) continue
             const range = doc.createRange()
-            range.selectNodeContents(el)
+            if (image) range.selectNode(el)
+            else range.selectNodeContents(el)
             const rect = rectOf(range)
             if (!rect || rect.width <= 0 || rect.height <= 0) continue
+            if (image && (rect.width < 48 || rect.height < 48)) continue
             if (rect.x + rect.width < 0 || rect.x > innerWidth || rect.y + rect.height < 0 || rect.y > innerHeight) continue
-            found.push({ el, rect })
+            found.push({ el, rect, image })
         }
     }
     return found
@@ -538,6 +595,11 @@ const open = async file => {
             if (visual) return
             reportSelection(doc, index)
         }))
+        doc.addEventListener('click', e => {
+            if (visual || hints || e.target.closest?.('a[href]')) return
+            const image = e.target.closest?.('img, svg')
+            if (image && doc.getSelection()?.isCollapsed !== false) showImage(image)
+        })
     })
     view.addEventListener('create-overlay', ({ detail: { index } }) => {
         for (const a of highlights.values()) {
@@ -794,13 +856,13 @@ globalThis.omaread = {
         hintsClear()
         const found = hintTargets()
         if (!found.length) {
-            emit({ type: 'notice', message: 'No links on this page' })
+            emit({ type: 'notice', message: 'No links or images on this page' })
             return hintsReport()
         }
         const labels = hintLabels(found.length)
         // Solid colours: with Glassy Windows the page background is transparent.
         const fg = palette?.surface ?? '#ffffff', bg = palette?.fg ?? '#101315'
-        const targets = found.map(({ el, rect }, i) => {
+        const targets = found.map(({ el, rect, image }, i) => {
             const mark = document.createElement('div')
             mark.className = 'omaread-hint'
             Object.assign(mark.style, {
@@ -809,7 +871,7 @@ globalThis.omaread = {
                 color: fg, background: bg, pointerEvents: 'none', textTransform: 'lowercase',
             })
             document.body.append(mark)
-            return { label: labels[i], el, mark }
+            return { label: labels[i], el, mark, image }
         })
         hints = { targets, typed: '' }
         hintsShow()
@@ -824,10 +886,11 @@ globalThis.omaread = {
             return hintsReport()
         }
         if (left.length === 1 && left[0].label === typed) {
-            const { el } = left[0]
+            const { el, image } = left[0]
             hintsClear()
             hintsReport()
-            el.click()
+            if (image) showImage(el)
+            else el.click()
             return
         }
         hints.typed = typed

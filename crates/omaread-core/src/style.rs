@@ -88,6 +88,8 @@ window.omaread * {{ border-radius: 0; }}
   border: {hairline}px solid {accent};
   padding: {popup}px;
 }}
+/* Images can be transparent: show them on the theme's solid background. */
+.card.image-view {{ background-color: {bg}; }}
 .card .title {{ font-size: {title}px; font-weight: bold; }}
 .card .caption {{ font-size: {caption}px; color: {muted}; }}
 
@@ -592,7 +594,9 @@ mod tests {
         assert!(glass.contains(".card {\n  background-color: rgba(40, 40, 40, 0.650);"));
         // The library leaves the single frosted layer to the window.
         assert!(glass.contains(".library, .library-main, .library-side { background-color: transparent;"));
-        assert!(!glass.contains("#282828"));
+        // Only the image viewer stays solid: images can be transparent.
+        let solid: Vec<&str> = glass.lines().filter(|l| l.contains("#282828")).collect();
+        assert_eq!(solid, [".card.image-view { background-color: #282828; }"]);
         // Opaque mode keeps solid fills.
         assert!(chrome_css(&t, false).contains("background-color: #282828"));
     }

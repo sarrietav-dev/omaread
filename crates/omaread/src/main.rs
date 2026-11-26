@@ -3,6 +3,7 @@ mod assets;
 mod cli;
 mod footnote_view;
 mod help_view;
+mod image_view;
 mod keys;
 mod library_view;
 mod lookup_view;

@@ -51,6 +51,12 @@ pub enum Event {
         #[serde(default)]
         text: String,
     },
+    /// An image to show in the viewer: a PNG, base64.
+    Image {
+        data: String,
+        #[serde(default)]
+        alt: String,
+    },
     /// Link hints went up (`active`) or came down.
     Hints { active: bool },
     /// A link to a footnote was followed: the note, to show in a card.

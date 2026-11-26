@@ -70,6 +70,9 @@ pub enum Action {
     Hints,
     /// A letter typed while the links are labelled.
     HintKey(char),
+    /// The image viewer: show the image at its own size, or fitted.
+    ActualSize,
+    Fit,
     // Selection and annotations
     Highlight,
     Color(usize),
@@ -126,6 +129,8 @@ pub enum Context {
     Note,
     /// The links on the page are labelled, waiting for one to be typed.
     Hints,
+    /// An image is open in the viewer.
+    Image,
     /// The highlights or bookmarks panel is open.
     Annotations,
     /// The search results have the keys.
@@ -203,6 +208,7 @@ pub fn context_by_name(name: &str) -> Option<Context> {
         "visual" => Context::Visual,
         "note" => Context::Note,
         "hints" => Context::Hints,
+        "image" => Context::Image,
         "annotations" => Context::Annotations,
         "search" => Context::Search,
         "lookup" => Context::Lookup,
@@ -308,7 +314,7 @@ impl Keymap {
                 (Some('i'), Context::Reader) => Some(Action::Forward),
                 _ => None,
             }
-        } else if ch == Some('g') && !matches!(context, Context::Selection | Context::Visual | Context::Hints) {
+        } else if ch == Some('g') && !matches!(context, Context::Selection | Context::Visual | Context::Hints | Context::Image) {
             self.pending_g = true;
             return None;
         } else if ch == Some('d') && context == Context::Annotations {
@@ -323,6 +329,7 @@ impl Keymap {
                 Context::Selection => selection(key, ch),
                 Context::Visual => visual(key, ch),
                 Context::Note => note(key, ch),
+                Context::Image => image(key, ch),
                 Context::Hints => match (key, ch) {
                     (Key::Escape, _) => Some(Action::Close),
                     (_, Some(c)) if c.is_ascii_alphabetic() => Some(Action::HintKey(c)),
@@ -539,6 +546,30 @@ fn visual(key: Key, ch: Option<char>) -> Option<Action> {
         '0' | '^' => Some(Action::Extend(LineBoundary, false)),
         'o' => Some(Action::SwapEnds),
         'v' => Some(Action::Open),
+        'y' => Some(Action::Copy),
+        'q' => Some(Action::Close),
+        _ => None,
+    }
+}
+
+fn image(key: Key, ch: Option<char>) -> Option<Action> {
+    match key {
+        Key::Escape => return Some(Action::Close),
+        Key::Left => return Some(Action::Move(-1, 0)),
+        Key::Right => return Some(Action::Move(1, 0)),
+        Key::Up => return Some(Action::Move(0, -1)),
+        Key::Down => return Some(Action::Move(0, 1)),
+        _ => {}
+    }
+    match ch? {
+        'h' => Some(Action::Move(-1, 0)),
+        'l' => Some(Action::Move(1, 0)),
+        'k' => Some(Action::Move(0, -1)),
+        'j' => Some(Action::Move(0, 1)),
+        '+' | '=' => Some(Action::Bigger),
+        '-' => Some(Action::Smaller),
+        '0' => Some(Action::Fit),
+        '1' => Some(Action::ActualSize),
         'y' => Some(Action::Copy),
         'q' => Some(Action::Close),
         _ => None,
