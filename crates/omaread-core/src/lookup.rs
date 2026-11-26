@@ -58,6 +58,8 @@ pub struct LookupContext {
     pub passage: String,
     /// The text's language tag (`en`, `es-ES`), if known.
     pub language: String,
+    /// The section's text from its start up to the selection.
+    pub before: String,
 }
 
 pub fn default_providers() -> Vec<ProviderSpec> {

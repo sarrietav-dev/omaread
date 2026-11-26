@@ -245,9 +245,11 @@ until you turn it on:
 enabled = true
 agent = "claude"     # claude, codex, opencode, or one of your own
 key = "e"            # adds "Explain" on this key
+# context = "chapter"    # also send the chapter so far (default: "passage")
+# max_context = 12000    # characters of it, its end kept
 # language = "English"   # the answer's language; else the text's own
 # timeout = 120          # seconds
-# prompt = "…{text}…{passage}…{title}…{chapter}…{language}…"
+# prompt = "…{text}…{passage}…{before}…{title}…{chapter}…{language}…"
 
 [llm.claude]
 model = "haiku"
@@ -258,6 +260,13 @@ model = "gpt-5-codex-mini"
 [llm.opencode]
 model = "anthropic/claude-haiku-4-5"
 ```
+
+By default a question carries the book's title and authors, the chapter's
+name and the paragraph around the selection. With `context = "chapter"` it
+also carries the chapter so far, from its start up to the selection (the
+last `max_context` characters of it), so the agent knows who and what the
+passage is about. Omaread reads that text and puts it in the prompt; the
+agent never gets the book's file.
 
 Each agent runs once per question, in an empty directory, with the prompt
 on stdin where its CLI allows it. A book's text can carry instructions

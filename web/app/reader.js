@@ -379,6 +379,7 @@ const reportSelection = (doc, index) => {
         fraction: view.getSectionFractions()[index] ?? 0,
         rect: rectOf(range),
         context: passageOf(range),
+        before: textBefore(range),
     })
     return true
 }
@@ -528,6 +529,41 @@ const hintsShow = () => {
         t.mark.textContent = t.label
         t.mark.dataset.typed = hints.typed.length
     }
+}
+
+// The section's text from its start up to the selection, for agent lookups
+// that read the chapter so far. Capped here; Rust trims it to the setting.
+const MAX_BEFORE = 100000
+const BLOCKS = /^(p|div|li|h[1-6]|blockquote|pre|dd|dt|tr|section|article|figcaption|aside|header|footer)$/i
+const textBefore = range => {
+    const doc = range.startContainer?.ownerDocument
+    if (!doc?.body) return ''
+    const until = doc.createRange()
+    until.setStart(doc.body, 0)
+    until.setEnd(range.startContainer, range.startOffset)
+    const blockOf = node => {
+        let el = node.parentElement
+        while (el && el !== doc.body && !BLOCKS.test(el.localName)) el = el.parentElement
+        return el
+    }
+    // Text in reading order, a paragraph break wherever the block changes.
+    const blocks = []
+    let current = null, block = null
+    const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT)
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if (until.comparePoint(node, 0) > 0) break
+        if (node.parentElement?.closest('script, style')) continue
+        const text = node === range.startContainer ? node.data.slice(0, range.startOffset) : node.data
+        const b = blockOf(node)
+        if (b !== block || current == null) {
+            block = b
+            current = []
+            blocks.push(current)
+        }
+        current.push(text)
+    }
+    const text = blocks.map(parts => parts.join('').replace(/\s+/g, ' ').trim()).filter(Boolean).join('\n\n')
+    return text.slice(-MAX_BEFORE)
 }
 
 const metadataOf = book => {

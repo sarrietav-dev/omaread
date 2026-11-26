@@ -1144,12 +1144,19 @@ impl Window {
         let (title, authors) = self.current.borrow().as_ref().map(|c| (c.book.title.clone(), c.book.authors.clone())).unwrap_or_default();
         let (text, lang) = match self.focus.borrow().as_ref() {
             Some(Focus::Text(s)) => {
-                self.lookup_context.replace(LookupContext { title, authors, chapter: s.chapter.clone(), passage: s.context.clone(), language: String::new() });
+                self.lookup_context.replace(LookupContext {
+                    title,
+                    authors,
+                    chapter: s.chapter.clone(),
+                    passage: s.context.clone(),
+                    language: String::new(),
+                    before: s.before.clone(),
+                });
                 (s.text.clone(), s.lang.clone())
             }
             Some(Focus::Highlight(id)) => match self.annotations.borrow().iter().find(|a| a.id == *id) {
                 Some(a) => {
-                    self.lookup_context.replace(LookupContext { title, authors, chapter: a.chapter.clone(), passage: String::new(), language: String::new() });
+                    self.lookup_context.replace(LookupContext { title, authors, chapter: a.chapter.clone(), ..LookupContext::default() });
                     (a.text.clone(), self.current.borrow().as_ref().and_then(|c| c.book.language.clone()))
                 }
                 None => return,

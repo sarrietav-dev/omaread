@@ -120,6 +120,10 @@ pub struct Selection {
     /// The paragraph the selection is in, for lookups that read around it.
     #[serde(default)]
     pub context: String,
+    /// The section's text up to the selection (its end), for agent lookups
+    /// with `context = "chapter"`.
+    #[serde(default)]
+    pub before: String,
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]

@@ -42,6 +42,12 @@ use crate::lookup::{LookupContext, LookupResult, ProviderSpec};
 /// Agents usually answer in seconds; one that loads many MCP servers can
 /// take half a minute before it starts.
 const DEFAULT_TIMEOUT: u64 = 120;
+/// Characters of the chapter so far sent with `context = "chapter"`: a few
+/// pages, enough to know who and what the passage is about.
+const DEFAULT_MAX_CONTEXT: usize = 12_000;
+/// The ceiling for `max_context`: OpenCode takes the prompt as one argument,
+/// which Linux caps at 128 KiB.
+const MAX_CONTEXT_CEILING: usize = 100_000;
 /// Answers longer than this are cut.
 const MAX_ANSWER: u64 = 256 * 1024;
 
@@ -53,7 +59,7 @@ with plain text only: no Markdown, no headings, no preamble.
 Book: {title}{by}
 Chapter: {chapter}
 
-Passage:
+{earlier}Passage:
 {passage}
 
 Selected text:
@@ -78,6 +84,12 @@ pub struct LlmConfig {
     pub prompt: String,
     /// The language answers are in ("English"); else the text's own.
     pub language: String,
+    /// How much of the book goes with a question: `passage` (the paragraph
+    /// around the selection) or `chapter` (also the chapter so far, from
+    /// its start up to the selection).
+    pub context: String,
+    /// The most characters of the chapter so far to send, its end kept.
+    pub max_context: usize,
     /// `[llm.<agent>]`: a model, and for agents of your own, the command.
     #[serde(flatten)]
     pub agents: BTreeMap<String, AgentConfig>,
@@ -93,6 +105,8 @@ impl Default for LlmConfig {
             timeout: DEFAULT_TIMEOUT,
             prompt: String::new(),
             language: String::new(),
+            context: "passage".into(),
+            max_context: DEFAULT_MAX_CONTEXT,
             agents: BTreeMap::new(),
         }
     }
@@ -212,9 +226,22 @@ fn language_name(tag: &str) -> String {
     name.into()
 }
 
+/// The end of the chapter so far, at most `max` characters, starting at a
+/// paragraph (or at least a word) so it doesn't open mid-word.
+pub fn earlier_text(before: &str, max: usize) -> String {
+    let before = before.trim();
+    let count = before.chars().count();
+    if count <= max {
+        return before.to_string();
+    }
+    let tail: String = before.chars().skip(count - max).collect();
+    let start = tail.find("\n\n").map(|i| i + 2).or_else(|| tail.find(char::is_whitespace).map(|i| i + 1)).unwrap_or(0);
+    format!("…{}", tail[start..].trim_start())
+}
+
 /// Fill in the prompt's placeholders. `language` is the answer's, if the
-/// config names one.
-pub fn prompt(template: &str, text: &str, ctx: &LookupContext, language: &str) -> String {
+/// config names one; `earlier` is the chapter so far, or empty.
+pub fn prompt(template: &str, text: &str, ctx: &LookupContext, language: &str, earlier: &str) -> String {
     let template = if template.trim().is_empty() { DEFAULT_PROMPT } else { template };
     let passage = if ctx.passage.trim().is_empty() { text } else { ctx.passage.trim() };
     let by = if ctx.authors.is_empty() { String::new() } else { format!(" by {}", ctx.authors.join(", ")) };
@@ -224,6 +251,8 @@ pub fn prompt(template: &str, text: &str, ctx: &LookupContext, language: &str) -
         .replace("{by}", &by)
         .replace("{chapter}", if ctx.chapter.is_empty() { "(unknown)" } else { &ctx.chapter })
         .replace("{language}", &if language.trim().is_empty() { language_name(&ctx.language) } else { language.trim().to_string() })
+        .replace("{earlier}", &if earlier.is_empty() { String::new() } else { format!("Earlier in the chapter, up to the selection:\n{earlier}\n\n") })
+        .replace("{before}", earlier)
         .replace("{passage}", passage)
         .replace("{text}", text)
 }
@@ -239,7 +268,11 @@ pub fn run(spec: &ProviderSpec, text: &str, ctx: &LookupContext) -> Result<Looku
         agent_config.model = spec.model.trim().to_string();
     }
     let template = if spec.prompt.trim().is_empty() { &config.prompt } else { &spec.prompt };
-    let prompt = prompt(template, text, ctx, &config.language);
+    let earlier = match config.context.trim() {
+        "chapter" => earlier_text(&ctx.before, config.max_context.min(MAX_CONTEXT_CEILING)),
+        _ => String::new(),
+    };
+    let prompt = prompt(template, text, ctx, &config.language, &earlier);
     let (argv, via) = command_line(agent, &agent_config, &prompt)?;
     let timeout = Duration::from_secs(if config.timeout == 0 { DEFAULT_TIMEOUT } else { config.timeout });
     let answer = execute(&argv, via, &prompt, timeout)?;
@@ -389,15 +422,19 @@ mod tests {
             chapter: "Book One".into(),
             passage: "The spice must flow.".into(),
             language: "en-US".into(),
+            before: String::new(),
         };
-        let p = prompt("", "spice", &ctx, "");
+        let p = prompt("", "spice", &ctx, "", "");
+        assert!(!p.contains("Earlier in the chapter"));
+        let p2 = prompt("", "spice", &ctx, "", "Paul arrives on Arrakis.");
+        assert!(p2.contains("Earlier in the chapter, up to the selection:\nPaul arrives on Arrakis.\n\nPassage:"));
         assert!(p.contains("Answer in English."));
-        assert!(prompt("", "spice", &ctx, "Spanish").contains("Answer in Spanish."));
+        assert!(prompt("", "spice", &ctx, "Spanish", "").contains("Answer in Spanish."));
         assert!(p.contains("Book: Dune by Frank Herbert"));
         assert!(p.contains("Chapter: Book One"));
         assert!(p.contains("Passage:\nThe spice must flow."));
         assert!(p.ends_with("Selected text:\nspice"));
-        assert_eq!(prompt("{text} in {title}", "x", &LookupContext::default(), ""), "x in (unknown)");
+        assert_eq!(prompt("{text} in {title}", "x", &LookupContext::default(), "", ""), "x in (unknown)");
     }
 
     #[test]
@@ -416,6 +453,26 @@ mod tests {
         let path = other.path().to_path_buf();
         drop(other);
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn the_chapter_so_far_keeps_its_end_and_starts_at_a_paragraph() {
+        assert_eq!(earlier_text("  short  ", 100), "short");
+        let text = "First paragraph here.\n\nSecond one.\n\nThird and last.";
+        assert_eq!(earlier_text(text, 20), "…Third and last.");
+        assert_eq!(earlier_text("one two three four", 9), "…four");
+    }
+
+    #[test]
+    fn chapter_context_goes_in_only_when_asked_for() {
+        let mut config = LlmConfig { enabled: true, agent: "cat".into(), ..LlmConfig::default() };
+        config.agents.insert("cat".into(), AgentConfig { command: vec!["cat".into()], ..AgentConfig::default() });
+        let ctx = LookupContext { before: "Earlier words.".into(), ..LookupContext::default() };
+        let spec = ProviderSpec { kind: "llm".into(), prompt: "[{before}] {text}".into(), llm: Some(config.clone()), ..ProviderSpec::default() };
+        assert_eq!(run(&spec, "x", &ctx).unwrap().body, "[] x");
+        config.context = "chapter".into();
+        let spec = ProviderSpec { llm: Some(config), ..spec };
+        assert_eq!(run(&spec, "x", &ctx).unwrap().body, "[Earlier words.] x");
     }
 
     #[test]
