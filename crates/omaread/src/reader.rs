@@ -45,6 +45,12 @@ pub enum Event {
     },
     Selection(Selection),
     SelectionCleared,
+    /// Visual mode started, moved or ended; `text` is what it has selected.
+    Visual {
+        active: bool,
+        #[serde(default)]
+        text: String,
+    },
     /// A highlight was clicked.
     AnnotationClick {
         cfi: String,

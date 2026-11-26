@@ -356,6 +356,64 @@ const passageOf = range => {
     return text.slice(-2400)
 }
 
+// Tell Rust about the selection in `doc` (section `index`), or that there
+// is none. The mouse and visual mode both end here.
+const reportSelection = (doc, index) => {
+    const sel = doc.getSelection()
+    if (!sel.rangeCount || sel.isCollapsed) {
+        if (selection) emit({ type: 'selection-cleared' })
+        selection = null
+        return false
+    }
+    const range = sel.getRangeAt(0)
+    const cfi = view.getCFI(index, range)
+    selection = { index, range, cfi }
+    emit({
+        type: 'selection',
+        text: sel.toString(),
+        cfi,
+        lang: langOf(range.commonAncestorContainer?.parentElement ?? range.commonAncestorContainer) ?? null,
+        chapter: view.getProgressOf(index, range)?.tocItem?.label?.trim() ?? '',
+        fraction: view.getSectionFractions()[index] ?? 0,
+        rect: rectOf(range),
+        context: passageOf(range),
+    })
+    return true
+}
+
+// --- Visual mode ------------------------------------------------------------
+// Selecting from the keyboard: start on the first word of the page, then
+// grow or shrink the selection by characters, words, sentences, lines or
+// paragraphs (the browser's own Selection.modify), from either end.
+
+let visual = null // { doc, index }
+
+const visualSelection = () => visual?.doc?.getSelection()
+
+// Keep the moving end on screen: turn the page when it walks off it.
+const visualFollow = () => {
+    const sel = visualSelection()
+    if (!sel?.rangeCount) return
+    const focus = visual.doc.createRange()
+    focus.setStart(sel.focusNode, sel.focusOffset)
+    const rect = rectOf(focus) ?? (() => {
+        // A collapsed range can have no rects; measure its node instead.
+        const r = visual.doc.createRange()
+        r.selectNodeContents(sel.focusNode.nodeType === 1 ? sel.focusNode : sel.focusNode.parentNode)
+        return rectOf(r)
+    })()
+    if (!rect) return
+    if (rect.x < 0 || rect.x > innerWidth || rect.y < 0 || rect.y > innerHeight)
+        view.renderer.scrollToAnchor?.(focus)
+}
+
+const visualText = () => {
+    const text = visualSelection()?.toString() ?? ''
+    return text.replace(/\s+/g, ' ').trim()
+}
+
+const visualReport = () => emit({ type: 'visual', active: Boolean(visual), text: visual ? visualText() : '' })
+
 const metadataOf = book => {
     const text = x => !x ? '' : typeof x === 'string' ? x : x[Object.keys(x)[0]] ?? ''
     const names = x => [x ?? []].flat().map(a => text(typeof a === 'string' ? a : a?.name)).filter(Boolean)
@@ -410,25 +468,8 @@ const open = async file => {
         resolveDocumentViewportUnits(doc, innerWidth, innerHeight)
         markPublisherHeadings(doc, book.toc)
         doc.addEventListener('pointerup', () => setTimeout(() => {
-            const sel = doc.getSelection()
-            if (!sel.rangeCount || sel.isCollapsed) {
-                if (selection) emit({ type: 'selection-cleared' })
-                selection = null
-                return
-            }
-            const range = sel.getRangeAt(0)
-            const cfi = view.getCFI(index, range)
-            selection = { index, range, cfi }
-            emit({
-                type: 'selection',
-                text: sel.toString(),
-                cfi,
-                lang: langOf(range.commonAncestorContainer?.parentElement ?? range.commonAncestorContainer) ?? null,
-                chapter: view.getProgressOf(index, range)?.tocItem?.label?.trim() ?? '',
-                fraction: view.getSectionFractions()[index] ?? 0,
-                rect: rectOf(range),
-                context: passageOf(range),
-            })
+            if (visual) return
+            reportSelection(doc, index)
         }))
     })
     view.addEventListener('create-overlay', ({ detail: { index } }) => {
@@ -682,6 +723,50 @@ globalThis.omaread = {
         emit({ type: 'notice', message: view?.book.pageList?.length ? `No page ${label} in this book` : 'This book has no page numbers; try a percentage' })
     },
     goToFraction: f => view?.goToFraction(f),
+    visualStart() {
+        const range = view?.lastLocation?.range
+        const doc = range?.startContainer?.ownerDocument
+        const index = view?.renderer?.getContents?.().find(c => c.doc === doc)?.index
+        if (!doc || index == null) return emit({ type: 'notice', message: 'Nothing on this page to select' })
+        const sel = doc.getSelection()
+        sel.removeAllRanges()
+        const start = range.cloneRange()
+        start.collapse(true)
+        sel.addRange(start)
+        // From the start of the page to the end of its first word.
+        sel.modify('move', 'forward', 'word')
+        sel.modify('move', 'backward', 'word')
+        sel.modify('extend', 'forward', 'word')
+        visual = { doc, index }
+        visualReport()
+    },
+    visualMove({ unit, forward }) {
+        const sel = visualSelection()
+        if (!sel?.rangeCount) return
+        sel.modify('extend', forward ? 'forward' : 'backward', unit)
+        visualFollow()
+        visualReport()
+    },
+    // The other end of the selection becomes the one that moves.
+    visualSwap() {
+        const sel = visualSelection()
+        if (!sel?.rangeCount) return
+        sel.setBaseAndExtent(sel.focusNode, sel.focusOffset, sel.anchorNode, sel.anchorOffset)
+        visualFollow()
+        visualReport()
+    },
+    // Done: the selection becomes a normal one, with its card.
+    visualDone() {
+        if (!visual) return
+        const { doc, index } = visual
+        visual = null
+        if (!reportSelection(doc, index)) visualReport()
+    },
+    visualCancel() {
+        visualSelection()?.removeAllRanges()
+        visual = null
+        visualReport()
+    },
     back: () => view?.history.back(),
     forward: () => view?.history.forward(),
 }

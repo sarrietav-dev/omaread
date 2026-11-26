@@ -118,6 +118,12 @@ pub struct Window {
     last_location: RefCell<Option<Location>>,
     /// Where to go once the book being opened is ready (`omaread open --at`).
     pending_jump: RefCell<Option<Jump>>,
+    /// Visual mode is selecting text from the keyboard.
+    visual: Cell<bool>,
+    /// What to do with the selection visual mode hands over (`y` copies).
+    visual_then: Cell<Option<Action>>,
+    /// The keys visual mode takes, over the book while it's on.
+    mode_hint: gtk::Label,
 }
 
 /// A place to open a book at, from `omaread open`.
@@ -317,6 +323,14 @@ impl Window {
         reader_overlay.add_overlay(&annotations_panel.root);
         reader_overlay.add_overlay(&selection_bar.root);
         reader_overlay.add_overlay(&note_editor.root);
+        let mode_hint = gtk::Label::builder()
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::End)
+            .visible(false)
+            .wrap(true)
+            .css_classes(["toast", "mode-hint"])
+            .build();
+        reader_overlay.add_overlay(&mode_hint);
 
         let stack = gtk::Stack::builder()
             .transition_type(gtk::StackTransitionType::Crossfade)
@@ -404,6 +418,9 @@ impl Window {
             turned: Cell::new(false),
             last_location: RefCell::default(),
             pending_jump: RefCell::default(),
+            visual: Cell::new(false),
+            visual_then: Cell::new(None),
+            mode_hint,
         });
         if let Some(speed) = win.db.as_ref().and_then(|db| db.setting(SPEED_SETTING).ok().flatten()).and_then(|s| ReadingSpeed::from_setting(&s)) {
             win.speed.set(speed);
@@ -593,6 +610,7 @@ impl Window {
 
     fn open_book(&self, book: Book) {
         self.pending_jump.take();
+        self.end_visual();
         if let Some(error) = &book.error {
             self.show_toast(&format!("Can't open “{}”: {error}", book.title), true);
             return;
@@ -637,6 +655,7 @@ impl Window {
 
     /// Back to the library, keeping where we were.
     fn close_book(&self) {
+        self.end_visual();
         self.close_overlays();
         self.lookup.close();
         self.stop_speech();
@@ -682,6 +701,8 @@ impl Window {
             Context::Settings
         } else if self.annotations_panel.is_open() {
             Context::Annotations
+        } else if self.visual.get() {
+            Context::Visual
         } else if self.selection_bar.is_open() {
             Context::Selection
         } else {
@@ -716,7 +737,20 @@ impl Window {
                     self.reader.call("locate", &serde_json::to_string(&unplaced).unwrap_or_default());
                 }
             }
-            Event::Selection(selection) => self.show_selection(selection),
+            Event::Selection(selection) => {
+                if self.visual.replace(false) {
+                    self.mode_hint.set_visible(false);
+                }
+                match self.visual_then.take() {
+                    Some(Action::Copy) => {
+                        self.window.clipboard().set_text(selection.text.trim());
+                        self.show_toast("Copied", false);
+                        self.close_selection();
+                    }
+                    _ => self.show_selection(selection),
+                }
+            }
+            Event::Visual { active, text } => self.show_visual(active, &text),
             Event::SelectionCleared => {
                 if matches!(*self.focus.borrow(), Some(Focus::Text(_))) {
                     self.selection_bar.hide();
@@ -1647,6 +1681,30 @@ impl Window {
         self.focus.replace(Some(Focus::Text(selection)));
     }
 
+    /// Visual mode began, moved or ended.
+    fn show_visual(&self, active: bool, text: &str) {
+        self.visual.set(active);
+        if !active {
+            self.visual_then.take();
+            self.mode_hint.set_visible(false);
+            return;
+        }
+        let words = text.split_whitespace().count();
+        let size = if words == 1 { "1 word".to_string() } else { format!("{words} words") };
+        self.mode_hint.set_label(&format!(
+            "VISUAL · {size}    w/b word   ( ) sentence   {{ }} paragraph   j/k line   o other end   enter select   y copy   esc"
+        ));
+        self.mode_hint.set_visible(true);
+    }
+
+    fn end_visual(&self) {
+        if self.visual.replace(false) {
+            self.reader.call("visualCancel", "");
+        }
+        self.visual_then.take();
+        self.mode_hint.set_visible(false);
+    }
+
     /// The highlight drawn at exactly this CFI, if any.
     fn highlight_at(&self, cfi: &str) -> Option<Annotation> {
         self.annotations.borrow().iter().find(|a| a.kind == Kind::Highlight && a.cfi == cfi).cloned()
@@ -2182,6 +2240,20 @@ impl Window {
             (Context::Reader, Action::ToggleBookmark) => self.toggle_bookmark(),
             (Context::Reader, Action::Highlights) => self.annotations_panel.open(Kind::Highlight, &self.annotations.borrow()),
             (Context::Reader, Action::Bookmarks) => self.annotations_panel.open(Kind::Bookmark, &self.annotations.borrow()),
+            (Context::Reader, Action::Visual) => {
+                self.close_selection();
+                self.reader.call("visualStart", "");
+            }
+            (Context::Visual, Action::Extend(unit, forward)) => {
+                self.reader.call("visualMove", &serde_json::json!({ "unit": unit.as_str(), "forward": forward }).to_string());
+            }
+            (Context::Visual, Action::SwapEnds) => self.reader.call("visualSwap", ""),
+            (Context::Visual, Action::Open) => self.reader.call("visualDone", ""),
+            (Context::Visual, Action::Copy) => {
+                self.visual_then.set(Some(Action::Copy));
+                self.reader.call("visualDone", "");
+            }
+            (Context::Visual, Action::Close) => self.end_visual(),
             (Context::Selection, Action::Highlight) => self.toggle_highlight(),
             (Context::Selection, Action::Color(i)) => self.color(Some(i)),
             (Context::Selection, Action::Note) => {

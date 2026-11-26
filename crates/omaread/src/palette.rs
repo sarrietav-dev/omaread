@@ -35,6 +35,7 @@ pub fn reader_commands() -> Vec<Entry> {
         a("Highlights and notes", "A", Highlights),
         a("Bookmarks", "'", Bookmarks),
         a("Bookmark this page", "m", ToggleBookmark),
+        a("Select text from the keyboard", "v", Visual),
         a("Reading settings", ",", Settings),
         a("Bigger text", "+", Bigger),
         a("Smaller text", "-", Smaller),

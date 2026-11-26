@@ -9,6 +9,31 @@ use std::collections::HashMap;
 use gtk::gdk::{Key, ModifierType};
 use omaread_core::config::Keymap as ConfigKeymap;
 
+/// How far a visual-mode motion moves the selection's end: the browser's
+/// `Selection.modify` granularities.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unit {
+    Character,
+    Word,
+    Sentence,
+    Line,
+    Paragraph,
+    LineBoundary,
+}
+
+impl Unit {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Unit::Character => "character",
+            Unit::Word => "word",
+            Unit::Sentence => "sentence",
+            Unit::Line => "line",
+            Unit::Paragraph => "paragraph",
+            Unit::LineBoundary => "lineboundary",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     // Reader
@@ -35,6 +60,12 @@ pub enum Action {
     ToggleBookmark,
     Highlights,
     Bookmarks,
+    /// Select text from the keyboard.
+    Visual,
+    /// Visual mode: move the selection's moving end, forward or back.
+    Extend(Unit, bool),
+    /// Visual mode: the other end of the selection moves from now on.
+    SwapEnds,
     // Selection and annotations
     Highlight,
     Color(usize),
@@ -85,6 +116,8 @@ pub enum Context {
     Settings,
     /// Text is selected, or a highlight was clicked.
     Selection,
+    /// Selecting text from the keyboard.
+    Visual,
     /// The highlights or bookmarks panel is open.
     Annotations,
     /// The search results have the keys.
@@ -122,6 +155,8 @@ pub const NAMED: &[(&str, Action)] = &[
     ("bookmark", Action::ToggleBookmark),
     ("highlights", Action::Highlights),
     ("bookmarks", Action::Bookmarks),
+    ("visual", Action::Visual),
+    ("other_end", Action::SwapEnds),
     ("highlight", Action::Highlight),
     ("note", Action::Note),
     ("copy", Action::Copy),
@@ -156,6 +191,7 @@ pub fn context_by_name(name: &str) -> Option<Context> {
         "toc" => Context::Toc,
         "settings" => Context::Settings,
         "selection" => Context::Selection,
+        "visual" => Context::Visual,
         "annotations" => Context::Annotations,
         "search" => Context::Search,
         "lookup" => Context::Lookup,
@@ -261,7 +297,7 @@ impl Keymap {
                 (Some('i'), Context::Reader) => Some(Action::Forward),
                 _ => None,
             }
-        } else if ch == Some('g') && context != Context::Selection {
+        } else if ch == Some('g') && !matches!(context, Context::Selection | Context::Visual) {
             self.pending_g = true;
             return None;
         } else if ch == Some('d') && context == Context::Annotations {
@@ -274,6 +310,7 @@ impl Keymap {
                 Context::Toc => toc(key, ch),
                 Context::Settings => settings(key, ch),
                 Context::Selection => selection(key, ch),
+                Context::Visual => visual(key, ch),
                 Context::Annotations => annotations(key, ch),
                 Context::Search => search(key, ch),
                 Context::Lookup => lookup(key, ch),
@@ -450,6 +487,41 @@ fn reader(key: Key, ch: Option<char>, shift: bool) -> Option<Action> {
         'V' => Some(Action::Voices),
         'A' => Some(Action::Highlights),
         '\'' => Some(Action::Bookmarks),
+        'v' => Some(Action::Visual),
+        'q' => Some(Action::Close),
+        _ => None,
+    }
+}
+
+fn visual(key: Key, ch: Option<char>) -> Option<Action> {
+    use Unit::*;
+    match key {
+        Key::Escape => return Some(Action::Close),
+        Key::Return | Key::KP_Enter => return Some(Action::Open),
+        Key::Right => return Some(Action::Extend(Character, true)),
+        Key::Left => return Some(Action::Extend(Character, false)),
+        Key::Down => return Some(Action::Extend(Line, true)),
+        Key::Up => return Some(Action::Extend(Line, false)),
+        Key::Home => return Some(Action::Extend(LineBoundary, false)),
+        Key::End => return Some(Action::Extend(LineBoundary, true)),
+        _ => {}
+    }
+    match ch? {
+        'l' => Some(Action::Extend(Character, true)),
+        'h' => Some(Action::Extend(Character, false)),
+        'w' | 'e' | 'W' | 'E' => Some(Action::Extend(Word, true)),
+        'b' | 'B' => Some(Action::Extend(Word, false)),
+        'j' => Some(Action::Extend(Line, true)),
+        'k' => Some(Action::Extend(Line, false)),
+        ')' => Some(Action::Extend(Sentence, true)),
+        '(' => Some(Action::Extend(Sentence, false)),
+        '}' => Some(Action::Extend(Paragraph, true)),
+        '{' => Some(Action::Extend(Paragraph, false)),
+        '$' => Some(Action::Extend(LineBoundary, true)),
+        '0' | '^' => Some(Action::Extend(LineBoundary, false)),
+        'o' => Some(Action::SwapEnds),
+        'v' => Some(Action::Open),
+        'y' => Some(Action::Copy),
         'q' => Some(Action::Close),
         _ => None,
     }
@@ -710,6 +782,23 @@ mod tests {
         assert_eq!(press(&mut map, Context::Annotations, 'd'), Some(Action::Delete));
         assert_eq!(press(&mut map, Context::Annotations, 'j'), Some(Action::Move(0, 1)));
         assert_eq!(press(&mut map, Context::Selection, '3'), Some(Action::Color(2)));
+    }
+
+    #[test]
+    fn v_selects_from_the_keyboard_by_words_sentences_and_paragraphs() {
+        let mut map = Keymap::default();
+        assert_eq!(press(&mut map, Context::Reader, 'v'), Some(Action::Visual));
+        assert_eq!(press(&mut map, Context::Visual, 'w'), Some(Action::Extend(Unit::Word, true)));
+        assert_eq!(press(&mut map, Context::Visual, 'b'), Some(Action::Extend(Unit::Word, false)));
+        let paren = Key::from_name("parenright").unwrap();
+        assert_eq!(map.press(Context::Visual, paren, ModifierType::SHIFT_MASK), Some(Action::Extend(Unit::Sentence, true)));
+        let brace = Key::from_name("braceleft").unwrap();
+        assert_eq!(map.press(Context::Visual, brace, ModifierType::SHIFT_MASK), Some(Action::Extend(Unit::Paragraph, false)));
+        assert_eq!(press(&mut map, Context::Visual, 'o'), Some(Action::SwapEnds));
+        assert_eq!(press(&mut map, Context::Visual, 'y'), Some(Action::Copy));
+        // g doesn't wait for a second key here: there's no gg in visual mode.
+        assert_eq!(press(&mut map, Context::Visual, 'g'), None);
+        assert_eq!(press(&mut map, Context::Visual, 'v'), Some(Action::Open));
     }
 
     #[test]

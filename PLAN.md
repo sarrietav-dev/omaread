@@ -229,8 +229,9 @@ name = "Browser";    kind = "url"; key = "W"; url = "https://duckduckgo.com/?q={
 | Page | `m` bookmark · `+`/`-`/`=` font size · `[c`/`]c` columns · `T` cycle theme (system/light/dark) · `F` fullscreen |
 | Library | `hjkl` move · Enter open · `/` filter · Tab shelves · `o` sort · `gr` rescan |
 
-Later: a keyboard **visual mode** (`v`) to select text word-by-word and
-sentence-by-sentence without the mouse.
+A keyboard **visual mode** (`v`) selects text word by word, sentence by
+sentence or paragraph by paragraph without the mouse, then hands the
+selection to the same card the mouse does.
 
 ## Storage
 
