@@ -1,5 +1,6 @@
 mod annotations_view;
 mod assets;
+mod cli;
 mod help_view;
 mod keys;
 mod library_view;
@@ -31,18 +32,72 @@ fn main() -> glib::ExitCode {
         Some("lookup") => return lookup(&args[2..]),
         Some("status") => return status(),
         Some("check-library") => return check_library(),
-        _ => {}
+        Some("open") => return open_cli(&args),
+        Some(command) => {
+            if let Some(code) = cli::run(command, &args[2..]) {
+                return glib::ExitCode::from(code);
+            }
+        }
+        None => {}
     }
+    run_app(&args, None)
+}
 
+thread_local! {
+    /// Where `omaread open --at …` wants the book opened, when this process
+    /// becomes the app rather than handing the file to a running one.
+    static OPEN_HINT: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+fn app_id() -> String {
     // Debug builds can run beside the real app under another id (for tests).
-    let app_id = match std::env::var("OMAREAD_APP_ID") {
+    match std::env::var("OMAREAD_APP_ID") {
         Ok(id) if cfg!(debug_assertions) && gio::Application::id_is_valid(&id) => id,
         _ => APP_ID.to_string(),
-    };
-    let app = adw::Application::builder()
-        .application_id(app_id.as_str())
+    }
+}
+
+fn build_app() -> adw::Application {
+    adw::Application::builder()
+        .application_id(app_id().as_str())
         .flags(gio::ApplicationFlags::HANDLES_OPEN)
-        .build();
+        .build()
+}
+
+/// `omaread open <book> [--at CFI|--fraction F|--chapter N]`: open in the
+/// running app if there is one (the place travels as the open hint), else
+/// start the app with it.
+fn open_cli(args: &[String]) -> glib::ExitCode {
+    let json = args.iter().any(|a| a == "--json");
+    let (path, hint) = match cli::open_target(&args[2..]) {
+        Ok(target) => target,
+        Err(e) => {
+            e.report(json);
+            return glib::ExitCode::from(e.exit);
+        }
+    };
+    let app = build_app();
+    if app.register(gio::Cancellable::NONE).is_ok() && app.is_remote() {
+        app.open(&[gio::File::for_path(&path)], &hint);
+        // Deliver the call before exiting; a registered app that never ran
+        // warns when dropped, and there is nothing left to clean up.
+        if let Some(bus) = app.dbus_connection() {
+            let _ = bus.flush_sync(gio::Cancellable::NONE);
+        }
+        std::mem::forget(app);
+        return glib::ExitCode::SUCCESS;
+    }
+    // Registered as the primary: start the app here, with the book.
+    let argv = vec![args[0].clone(), path.to_string_lossy().into_owned()];
+    run_app_with(app, &argv, Some(hint))
+}
+
+fn run_app(args: &[String], hint: Option<String>) -> glib::ExitCode {
+    run_app_with(build_app(), args, hint)
+}
+
+fn run_app_with(app: adw::Application, args: &[String], hint: Option<String>) -> glib::ExitCode {
+    OPEN_HINT.with(|h| *h.borrow_mut() = hint.filter(|h| !h.is_empty()));
 
     // One window per process for now; a second `omaread book.epub` opens the
     // book in it (GApplication forwards the files to the running instance).
@@ -69,15 +124,17 @@ fn main() -> glib::ExitCode {
         let ensure = ensure.clone();
         move |app| ensure(app).window.present()
     });
-    app.connect_open(move |app, files, _| {
+    app.connect_open(move |app, files, hint| {
         let win = ensure(app);
+        // A hint from `omaread open` in another process, or our own.
+        let hint = Some(hint.to_string()).filter(|h| !h.is_empty()).or_else(|| OPEN_HINT.with(|h| h.borrow_mut().take()));
         if let Some(file) = files.first() {
-            win.open(file);
+            win.open_at(file, hint.as_deref());
         }
         win.window.present();
     });
 
-    app.run()
+    app.run_with_args(args)
 }
 
 /// `omaread status [--json]`: the books you're reading, latest first. The bar

@@ -175,7 +175,7 @@ fn is_remote(href: &str) -> bool {
     lower.starts_with("http:") || lower.starts_with("https:") || lower.starts_with("data:")
 }
 
-fn read_text(zip: &mut ZipArchive<BufReader<File>>, name: &str) -> Result<String, Error> {
+pub(crate) fn read_text(zip: &mut ZipArchive<BufReader<File>>, name: &str) -> Result<String, Error> {
     let file = zip.by_name(name).map_err(|_| Error::Invalid("missing package file"))?;
     if file.size() > MAX_XML {
         return Err(Error::Invalid("package file too large"));
@@ -191,7 +191,7 @@ fn read_text(zip: &mut ZipArchive<BufReader<File>>, name: &str) -> Result<String
 /// reader undoes it; any other encryption method is DRM.
 const OBFUSCATION: [&str; 2] = ["http://www.idpf.org/2008/embedding", "http://ns.adobe.com/pdf/enc#RC"];
 
-fn encrypted_content(mut file: impl Read) -> bool {
+pub(crate) fn encrypted_content(mut file: impl Read) -> bool {
     let mut text = String::new();
     if file.read_to_string(&mut text).is_err() {
         return false;
@@ -215,7 +215,7 @@ fn is_drm(encryption_xml: &str) -> bool {
     }
 }
 
-fn attr(e: &BytesStart, local: &str) -> Option<String> {
+pub(crate) fn attr(e: &BytesStart, local: &str) -> Option<String> {
     e.attributes().flatten().find(|a| a.key.local_name().as_ref() == local).map(|a| {
         #[allow(deprecated)]
         let value = a.unescape_value().unwrap_or_else(|_| Cow::Owned(a.value.to_string()));
@@ -223,7 +223,7 @@ fn attr(e: &BytesStart, local: &str) -> Option<String> {
     })
 }
 
-fn rootfile(container: &str) -> Option<String> {
+pub(crate) fn rootfile(container: &str) -> Option<String> {
     let mut reader = Reader::from_str(container);
     loop {
         match reader.read_event() {
@@ -240,7 +240,7 @@ fn rootfile(container: &str) -> Option<String> {
 }
 
 /// A zip path relative to the OPF, normalised (`../`, `./`, `%20`).
-fn resolve(opf_path: &str, href: &str) -> String {
+pub(crate) fn resolve(opf_path: &str, href: &str) -> String {
     let href = href.split(['#', '?']).next().unwrap_or(href);
     let href = percent_decode(href);
     let mut parts: Vec<&str> = match opf_path.rsplit_once('/') {

@@ -18,5 +18,6 @@ pub mod speed;
 pub mod ssip;
 pub mod style;
 pub mod theme;
+pub mod text;
 pub mod themes;
 pub mod voice;

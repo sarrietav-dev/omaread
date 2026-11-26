@@ -114,6 +114,29 @@ pub struct Window {
     /// The next relocation follows a page turn (not a jump), so it can teach the pace.
     turned: Cell<bool>,
     last_location: RefCell<Option<Location>>,
+    /// Where to go once the book being opened is ready (`omaread open --at`).
+    pending_jump: RefCell<Option<Jump>>,
+}
+
+/// A place to open a book at, from `omaread open`.
+#[derive(Debug, Clone, PartialEq)]
+enum Jump {
+    Cfi(String),
+    Fraction(f64),
+    Chapter(usize),
+}
+
+impl Jump {
+    /// `at:<cfi>`, `fraction:<f>` or `chapter:<n>`, as `omaread open` sends them.
+    fn parse(hint: &str) -> Option<Jump> {
+        let (kind, value) = hint.split_once(':')?;
+        match kind {
+            "at" if !value.is_empty() => Some(Jump::Cfi(value.to_string())),
+            "fraction" => value.parse().ok().filter(|f: &f64| (0.0..=1.0).contains(f)).map(Jump::Fraction),
+            "chapter" => value.parse().ok().filter(|n| *n > 0).map(Jump::Chapter),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -377,6 +400,7 @@ impl Window {
             page: RefCell::default(),
             turned: Cell::new(false),
             last_location: RefCell::default(),
+            pending_jump: RefCell::default(),
         });
         if let Some(speed) = win.db.as_ref().and_then(|db| db.setting(SPEED_SETTING).ok().flatten()).and_then(|s| ReadingSpeed::from_setting(&s)) {
             win.speed.set(speed);
@@ -512,13 +536,31 @@ impl Window {
         self.search.root.set_width_request(cap.min(400));
     }
 
-    /// Open a file given on the command line or by another app.
-    pub fn open(&self, file: &gio::File) {
+    /// Open a file given on the command line or by another app, at a place
+    /// if `omaread open` named one.
+    pub fn open_at(&self, file: &gio::File, hint: Option<&str>) {
         let Some(path) = file.path() else {
             self.show_toast("Only local files can be opened", true);
             return;
         };
-        self.open_book(self.book_for(&path));
+        let jump = hint.and_then(Jump::parse);
+        let book = self.book_for(&path);
+        let same = self.current.borrow().as_ref().is_some_and(|c| c.book.identity == book.identity);
+        if same && let Some(jump) = jump {
+            self.jump(jump);
+            return;
+        }
+        self.open_book(book);
+        self.pending_jump.replace(jump);
+    }
+
+    /// Go somewhere in the open book.
+    fn jump(&self, jump: Jump) {
+        match jump {
+            Jump::Cfi(cfi) => self.reader.call("goTo", &serde_json::to_string(&cfi).unwrap_or_default()),
+            Jump::Fraction(f) => self.reader.call("goToFraction", &f.to_string()),
+            Jump::Chapter(n) => self.run_command(&format!("ch {n}")),
+        }
     }
 
     /// The library's record for a file, or one made up from the file itself.
@@ -545,6 +587,7 @@ impl Window {
     }
 
     fn open_book(&self, book: Book) {
+        self.pending_jump.take();
         if let Some(error) = &book.error {
             self.show_toast(&format!("Can't open “{}”: {error}", book.title), true);
             return;
@@ -657,6 +700,9 @@ impl Window {
             Event::BookReady { toc, .. } => {
                 self.toc.set_items(&toc);
                 self.toc_items.replace(toc);
+                if let Some(jump) = self.pending_jump.take() {
+                    self.jump(jump);
+                }
                 self.reader.view.grab_focus();
                 // Imported annotations come without a chapter; ask the book.
                 let unplaced: Vec<String> =
@@ -2346,6 +2392,16 @@ fn status_line() -> Status {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn open_hints_parse_into_jumps() {
+        assert_eq!(Jump::parse("at:epubcfi(/6/4!/2)"), Some(Jump::Cfi("epubcfi(/6/4!/2)".into())));
+        assert_eq!(Jump::parse("fraction:0.25"), Some(Jump::Fraction(0.25)));
+        assert_eq!(Jump::parse("chapter:3"), Some(Jump::Chapter(3)));
+        assert_eq!(Jump::parse("fraction:4"), None);
+        assert_eq!(Jump::parse("chapter:0"), None);
+        assert_eq!(Jump::parse(""), None);
+    }
 
     #[test]
     fn speed_reads_as_a_multiplier_without_trailing_zeroes() {

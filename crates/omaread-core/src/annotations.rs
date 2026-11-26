@@ -104,6 +104,32 @@ impl Db {
         )
     }
 
+    /// Every book's annotations, as `(identity, annotation)`, newest first.
+    pub fn all_annotations(&self) -> Result<Vec<(String, Annotation)>, Error> {
+        let mut stmt = self.conn().prepare_cached(
+            "SELECT identity, id, kind, cfi, color, text, note, chapter, fraction, created_at, updated_at
+             FROM annotations ORDER BY updated_at DESC, id DESC",
+        )?;
+        stmt.query_map([], |r| {
+            Ok((
+                r.get(0)?,
+                Annotation {
+                    id: r.get(1)?,
+                    kind: Kind::parse(&r.get::<_, String>(2)?),
+                    cfi: r.get(3)?,
+                    color: r.get(4)?,
+                    text: r.get(5)?,
+                    note: r.get(6)?,
+                    chapter: r.get(7)?,
+                    fraction: r.get(8)?,
+                    created_at: r.get(9)?,
+                    updated_at: r.get(10)?,
+                },
+            ))
+        })?
+        .collect()
+    }
+
     pub fn delete_annotation(&self, identity: &str, id: i64) -> Result<(), Error> {
         self.conn().prepare_cached("DELETE FROM annotations WHERE identity = ?1 AND id = ?2")?.execute(rusqlite::params![identity, id])?;
         Ok(())

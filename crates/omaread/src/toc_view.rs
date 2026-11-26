@@ -193,21 +193,8 @@ fn contains(items: &[TocItem], href: &str) -> bool {
 /// The href of chapter `n`: the top-level entry numbered `n` ("3. …",
 /// "Chapter 3", "Capítulo 3"), or else the n-th entry.
 pub fn chapter_href(items: &[TocItem], n: usize) -> Option<String> {
-    let numbered = items.iter().find(|item| label_number(&item.label) == Some(n));
+    let numbered = items.iter().find(|item| omaread_core::text::label_number(&item.label) == Some(n));
     numbered.or_else(|| items.get(n.checked_sub(1)?)).and_then(|i| i.href.clone())
-}
-
-fn label_number(label: &str) -> Option<usize> {
-    let lower = label.trim().to_lowercase();
-    let rest = ["chapter ", "capítulo ", "capitulo ", "part ", "parte "]
-        .iter()
-        .find_map(|p| lower.strip_prefix(p))
-        .unwrap_or(&lower);
-    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
-    let after = rest[digits.len()..].chars().next();
-    // "3. Title", "3 Title", "Chapter 3" — but not "1984" or "3D Negotiation".
-    let ends_cleanly = matches!(after, None | Some('.' | ':' | ' ' | ')' | '-' | '—'));
-    if digits.is_empty() || !ends_cleanly { None } else { digits.parse().ok() }
 }
 
 #[cfg(test)]

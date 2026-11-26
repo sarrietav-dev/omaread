@@ -15,7 +15,9 @@ node --test web/app/             # JS tests (typography.test.mjs, node:test)
 bin/omaread-install [--default] # release build + install to ~/.local (+ default EPUB handler)
 ```
 
-CLI subcommands handled in `main.rs` before GTK starts: `scan`, `status [--json]`, `check-library [--json]` (opens every EPUB, smoke test), `lookup`, `import-foliate`.
+CLI subcommands handled before GTK starts: `scan`, `status [--json]`, `check-library [--json]` (opens every EPUB, smoke test), `lookup`, `import-foliate` in `main.rs`; the agent-facing ones (`list`, `show`, `toc`, `text`, `search`, `annotations`, `commands`) in `cli.rs`, with their conventions in its module doc. `open <book> --at/--fraction/--chapter` hands the place to a running instance as the GApplication open hint. Book text without WebKit comes from `omaread-core::text`.
+
+When testing the app, set `XDG_DATA_HOME`/`XDG_CACHE_HOME` to a scratch copy of the database: a debug build otherwise reads and writes the real reading positions.
 
 System deps (Arch): `gtk4 libadwaita webkitgtk-6.0 alsa-lib`.
 

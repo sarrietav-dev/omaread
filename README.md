@@ -261,15 +261,36 @@ shows the current sentence and speed; `Esc` stops and `s` pauses.
 
 ```
 omaread [book.epub]         open a book, or the library
-omaread scan                refresh the library without opening a window
+omaread open <book> [--at CFI | --fraction F | --chapter N]
+                            open a book in the running app, at a place
+omaread list [--reading]    the library, most recently opened first
+omaread show <book>         one book: progress, chapters, annotation counts
+omaread toc <book>          its table of contents
+omaread text <book> [--chapter N | --section N]
+                            a chapter as plain text (default: the one you're in)
+omaread search <book> <text>
+                            find text in a book, with the words around it
+omaread annotations [<book>] [--query text]
+                            highlights and notes, of one book or all of them
 omaread status [--json]     what you're reading: title, chapter, progress, time left
+omaread scan                refresh the library without opening a window
 omaread check-library       open every book and report the ones that won't
 omaread lookup d goroutine  what the lookup card would show
 omaread import-foliate      bring Foliate's positions and annotations over
+omaread commands [--json]   every command and its options
 ```
 
-`omaread status --json` is there for a bar or a script; `omaread
-check-library --json` is the smoke test for a pile of EPUBs.
+A book is named by its path, its id, or part of its title or author.
+
+The commands are made to be used by scripts and coding agents as well as by
+hand. `--json` prints one JSON object on stdout, and errors go to stderr (as
+JSON with `--json`). The exit code is 0 on success, 1 when something failed,
+and 2 for a bad request: wrong usage, no such book, or a name that matches
+several. Nothing prompts. Long output is cut (`--limit`, `--max-chars`) and
+the JSON says where to continue (`truncated`, `next`, `--offset`).
+`omaread commands --json` describes every command for an agent to read.
+`omaread status --json` is there for a bar; `omaread check-library --json`
+is the smoke test for a pile of EPUBs.
 
 ## Coming from Foliate?
 
