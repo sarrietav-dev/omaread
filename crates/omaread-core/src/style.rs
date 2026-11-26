@@ -20,6 +20,9 @@ pub fn chrome_css(t: &Theme, glassy: bool) -> String {
     let bg_css = if glassy { bg.alpha(GLASS_ALPHA) } else { bg.to_string() };
     // Full-page surfaces stay clear in glassy mode so the window paints the
     // single frosted layer; panels drawn over them stack their own alpha.
+    // Cards, toasts and menus float over the book: always solid, so the
+    // words behind never show through what you're reading in them.
+    let popup_bg = bg.to_string();
     let page_bg = if glassy { "transparent".to_string() } else { bg_css.clone() };
     let c = &t.controls;
 
@@ -46,9 +49,9 @@ pub fn chrome_css(t: &Theme, glassy: bool) -> String {
         ("view_fg_color", fg.to_string()),
         ("headerbar_bg_color", bg_css.clone()),
         ("headerbar_fg_color", fg.to_string()),
-        ("popover_bg_color", bg_css.clone()),
+        ("popover_bg_color", popup_bg.clone()),
         ("popover_fg_color", fg.to_string()),
-        ("dialog_bg_color", bg_css.clone()),
+        ("dialog_bg_color", popup_bg.clone()),
         ("dialog_fg_color", fg.to_string()),
         ("card_bg_color", fg.alpha(c.normal_fill_alpha)),
         ("card_fg_color", fg.to_string()),
@@ -83,13 +86,11 @@ window.omaread * {{ border-radius: 0; }}
 .reader-status .numeric {{ font-feature-settings: "tnum"; }}
 
 .card {{
-  background-color: {bg_css};
+  background-color: {popup_bg};
   color: {fg};
   border: {hairline}px solid {accent};
   padding: {popup}px;
 }}
-/* Images can be transparent: show them on the theme's solid background. */
-.card.image-view {{ background-color: {bg}; }}
 .card .title {{ font-size: {title}px; font-weight: bold; }}
 .card .caption {{ font-size: {caption}px; color: {muted}; }}
 
@@ -118,7 +119,7 @@ window.omaread * {{ border-radius: 0; }}
 .empty .gap {{ margin-top: {lg}px; }}
 
 .toast {{
-  background-color: {bg_css};
+  background-color: {popup_bg};
   color: {fg};
   border: {hairline}px solid {accent};
   padding: {md}px {row_x}px;
@@ -260,7 +261,7 @@ list.annotation-list .swatch-underline, list.annotation-list .swatch-squiggly,
 list.annotation-list .swatch-strikethrough {{ border-left-color: {muted}; }}
 .annotations-panel {{ min-width: {panel_wide}px; }}
 label.tts-bar {{
-  background-color: {bg_css};
+  background-color: {popup_bg};
   color: {fg};
   border: {hairline}px solid {accent};
   padding: {xs}px {row_x}px;
@@ -308,7 +309,7 @@ popover.speech-presets {{
   box-shadow: none;
 }}
 popover.speech-presets > contents {{
-  background-color: {bg_css};
+  background-color: {popup_bg};
   border: {hairline}px solid {accent};
   box-shadow: none;
   padding: {xs}px;
@@ -553,6 +554,7 @@ progressbar.book-progress > trough > progress {{
         accent = t.accent,
         surface = t.surface,
         bg_css = bg_css,
+        popup_bg = popup_bg,
         page_bg = page_bg,
         bg_alpha = bg.alpha(0.6),
         xs = t.space(3.0),
@@ -608,13 +610,14 @@ mod tests {
         let glass = chrome_css(&t, true);
         assert!(glass.contains("@define-color window_bg_color rgba(40, 40, 40, 0.650);"));
         assert!(glass.contains("window.omaread {\n  background-color: rgba(40, 40, 40, 0.650);"));
-        // Panels stack their alpha over the window's, staying readable.
-        assert!(glass.contains(".card {\n  background-color: rgba(40, 40, 40, 0.650);"));
+        // Cards, toasts and menus float over the book and stay solid.
+        assert!(glass.contains(".card {\n  background-color: #282828;"));
+        assert!(glass.contains(".toast {\n  background-color: #282828;"));
+        assert!(glass.contains("@define-color popover_bg_color #282828;"));
         // The library leaves the single frosted layer to the window.
         assert!(glass.contains(".library, .library-main, .library-side { background-color: transparent;"));
-        // Only the image viewer stays solid: images can be transparent.
-        let solid: Vec<&str> = glass.lines().filter(|l| l.contains("#282828")).collect();
-        assert_eq!(solid, [".card.image-view { background-color: #282828; }"]);
+        // The window itself stays see-through.
+        assert!(!glass.contains("@define-color window_bg_color #282828;"));
         // Opaque mode keeps solid fills.
         assert!(chrome_css(&t, false).contains("background-color: #282828"));
     }
