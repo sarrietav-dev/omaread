@@ -22,6 +22,8 @@ pub struct Config {
     pub library: LibraryConfig,
     pub lookup: LookupConfig,
     pub tts: TtsConfig,
+    /// `[llm]`: lookups answered by a coding agent's CLI. Off by default.
+    pub llm: crate::llm::LlmConfig,
     /// `[keymap.<context>] <action> = ["key", …]` rebinds the defaults.
     pub keymap: Keymap,
 }
@@ -91,6 +93,23 @@ pub type Keymap = BTreeMap<String, BTreeMap<String, Keys>>;
 pub struct LookupConfig {
     /// Replaces the built-in set when given.
     pub provider: Vec<crate::lookup::ProviderSpec>,
+}
+
+impl Config {
+    /// The lookup providers, with the `[llm]` lookup added when it's on and
+    /// the `[llm]` settings handed to every `llm` provider.
+    pub fn lookup_providers(&self) -> Vec<crate::lookup::ProviderSpec> {
+        let mut list = self.lookup.providers();
+        if let Some(explain) = self.llm.provider()
+            && !list.iter().any(|p| p.key == explain.key)
+        {
+            list.push(explain);
+        }
+        for p in list.iter_mut().filter(|p| p.kind == "llm") {
+            p.llm = self.llm.enabled.then(|| self.llm.clone());
+        }
+        list
+    }
 }
 
 impl LookupConfig {
@@ -304,5 +323,23 @@ mod tests {
         assert_eq!(c.keymap["reader"]["prev_page"].list(), vec!["k"]);
         assert_eq!(c.keymap["library"]["open"].list(), vec!["enter", "o"]);
         assert!(Config::parse("").unwrap().keymap.is_empty());
+    }
+
+    #[test]
+    fn llm_lookups_are_off_until_enabled_and_each_agent_has_a_model() {
+        let off = Config::parse("[llm]\nagent = \"codex\"\n").unwrap();
+        assert!(!off.lookup_providers().iter().any(|p| p.kind == "llm"));
+
+        let on = Config::parse(
+            "[llm]\nenabled = true\nagent = \"claude\"\nkey = \"e\"\n[llm.claude]\nmodel = \"haiku\"\n[llm.codex]\nmodel = \"gpt-5-codex\"\n\
+             [[lookup.provider]]\nname = \"Ask Codex\"\nkind = \"llm\"\nkey = \"E\"\nagent = \"codex\"\n",
+        )
+        .unwrap();
+        assert_eq!(on.llm.agents["claude"].model, "haiku");
+        assert_eq!(on.llm.agents["codex"].model, "gpt-5-codex");
+        let providers = on.lookup_providers();
+        let keys: Vec<&str> = providers.iter().filter(|p| p.kind == "llm").map(|p| p.key.as_str()).collect();
+        assert_eq!(keys, ["E", "e"]);
+        assert!(providers.iter().filter(|p| p.kind == "llm").all(|p| p.llm.is_some()));
     }
 }

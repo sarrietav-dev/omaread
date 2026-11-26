@@ -11,6 +11,7 @@ pub mod epub;
 pub mod fuzzy;
 pub mod kokoro;
 pub mod library;
+pub mod llm;
 pub mod lookup;
 pub mod prefs;
 pub mod speech;

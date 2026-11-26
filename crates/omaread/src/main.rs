@@ -193,7 +193,7 @@ fn lookup(args: &[String]) -> glib::ExitCode {
             words.push(a.clone());
         }
     }
-    let providers = omaread_core::config::Config::load().lookup.providers();
+    let providers = omaread_core::config::Config::load().lookup_providers();
     let Some(spec) = providers.iter().find(|p| p.key == *key) else {
         let keys: Vec<String> = providers.iter().map(|p| format!("{} ({})", p.key, p.name)).collect();
         eprintln!("no provider on key {key}; there are: {}", keys.join(", "));

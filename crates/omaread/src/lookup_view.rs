@@ -108,7 +108,11 @@ impl LookupView {
         }
         let short: String = text.chars().take(80).collect();
         self.title.set_label(&short);
-        self.body.set_label("Looking up…");
+        let waiting = match self.providers.get(index) {
+            Some(p) if p.kind == "llm" => "Asking the agent… (this can take a while)",
+            _ => "Looking up…",
+        };
+        self.body.set_label(waiting);
         self.body.remove_css_class("error");
         self.hint.set_label("esc close");
         self.root.set_visible(true);

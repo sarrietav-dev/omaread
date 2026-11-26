@@ -339,6 +339,23 @@ const visibleBookmarks = cfi => {
     } catch { return [] }
 }
 
+// The paragraph a selection sits in (with the one before it when it's
+// short), for lookups that read around the words.
+const passageOf = range => {
+    const blockOf = node => {
+        let el = node?.nodeType === 1 ? node : node?.parentElement
+        while (el && !/^(p|li|blockquote|dd|dt|h[1-6]|pre|td|figcaption)$/i.test(el.localName ?? '')
+            && el.localName !== 'body') el = el.parentElement
+        return el?.localName === 'body' ? null : el
+    }
+    const block = blockOf(range.startContainer)
+    if (!block) return ''
+    let text = block.textContent.replace(/\s+/g, ' ').trim()
+    const before = block.previousElementSibling
+    if (text.length < 400 && before) text = `${before.textContent.replace(/\s+/g, ' ').trim()}\n\n${text}`
+    return text.slice(-2400)
+}
+
 const metadataOf = book => {
     const text = x => !x ? '' : typeof x === 'string' ? x : x[Object.keys(x)[0]] ?? ''
     const names = x => [x ?? []].flat().map(a => text(typeof a === 'string' ? a : a?.name)).filter(Boolean)
@@ -410,6 +427,7 @@ const open = async file => {
                 chapter: view.getProgressOf(index, range)?.tocItem?.label?.trim() ?? '',
                 fraction: view.getSectionFractions()[index] ?? 0,
                 rect: rectOf(range),
+                context: passageOf(range),
             })
         }))
     })

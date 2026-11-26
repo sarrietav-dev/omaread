@@ -61,7 +61,8 @@ folders = ["~/Books", "/mnt/nas/books"]
   each, export to Markdown or JSON, and a one-shot import from Foliate.
 - **Lookups from a selection.** Wiktionary, Wikipedia and Google Translate
   (Spanish ⇄ English, picked from the text), plus local programs and web
-  searches of your own.
+  searches of your own. Optionally, an explanation from Claude Code, Codex
+  or OpenCode.
 - **Read aloud.** Kokoro by default, through a local Kokoro-FastAPI server:
   one sentence at a time with the sentence highlighted, turning pages and
   moving through chapters on its own. Audio plays as the server makes it, the
@@ -214,6 +215,54 @@ url = "https://duckduckgo.com/?q={text}"
 Commands run without a shell, and a selection never becomes an option
 (leading dashes are dropped); end your options with `--` where the program
 supports it.
+
+### Asking an agent
+
+A lookup can also be answered by a coding agent's CLI: Claude Code, Codex
+or OpenCode. It explains the selection using the paragraph around it,
+the chapter and the book, without spoiling what comes later. This is off
+until you turn it on:
+
+```toml
+[llm]
+enabled = true
+agent = "claude"     # claude, codex, opencode, or one of your own
+key = "e"            # adds "Explain" on this key
+# language = "English"   # the answer's language; else the text's own
+# timeout = 120          # seconds
+# prompt = "…{text}…{passage}…{title}…{chapter}…{language}…"
+
+[llm.claude]
+model = "haiku"
+
+[llm.codex]
+model = "gpt-5-codex-mini"
+
+[llm.opencode]
+model = "anthropic/claude-haiku-4-5"
+```
+
+Each agent runs once per question, in an empty directory, with the prompt
+on stdin where its CLI allows it. A book's text can carry instructions
+meant for an agent, so none of them gets tools that act: Claude Code runs
+without tools, sessions or MCP servers, Codex runs in its read-only sandbox,
+and OpenCode runs beside a project config that denies every permission.
+OpenCode still starts the MCP servers from your config, so its answers can
+take longer. A command of your own gets no such guard; make sure it can't
+act on what it reads. An agent the
+app can't find on its `PATH` takes `program = "/full/path"`. For any other
+tool, give it a command; the prompt goes to stdin unless an argument is
+`{prompt}`:
+
+```toml
+[llm.mine]
+command = ["my-llm", "--model", "{model}"]
+model = "small"
+```
+
+More agent lookups can sit beside the others under `[[lookup.provider]]`
+with `kind = "llm"` and their own `agent`, `model` and `prompt`. Agent
+answers aren't cached, and changes to `[llm]` apply when the app restarts.
 
 ## Reading aloud
 

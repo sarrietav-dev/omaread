@@ -12,7 +12,7 @@ use omaread_core::db::{Db, Progress};
 use omaread_core::annotations::{self, Annotation, Kind};
 use omaread_core::command::{self, Command, ExportFormat};
 use omaread_core::library::{self, Book, Paths};
-use omaread_core::lookup::{self as lookups, LookupResult};
+use omaread_core::lookup::{self as lookups, LookupContext, LookupResult};
 use omaread_core::prefs::ReaderPrefs;
 use omaread_core::speech;
 use omaread_core::speed::{ReadingSpeed, format_minutes};
@@ -80,6 +80,8 @@ pub struct Window {
     lookup: Rc<LookupView>,
     /// Lookup answers from worker threads: (provider, query, answer).
     lookup_tx: async_channel::Sender<(usize, String, Result<LookupResult, String>)>,
+    /// What surrounds the text being looked up, for `llm` providers.
+    lookup_context: RefCell<LookupContext>,
     search: Rc<SearchView>,
     settings: Rc<SettingsView>,
     selection_bar: SelectionBar,
@@ -270,7 +272,7 @@ impl Window {
             },
             &speed_presets(config.tts.engine),
         );
-        let lookup = LookupView::new(config.lookup.providers());
+        let lookup = LookupView::new(config.lookup_providers());
         let (lookup_tx, lookup_rx) = async_channel::unbounded::<(usize, String, Result<LookupResult, String>)>();
         let search = SearchView::new();
         let voice = VoicePanel::new({
@@ -370,6 +372,7 @@ impl Window {
             }),
             lookup,
             lookup_tx,
+            lookup_context: RefCell::default(),
             search,
             settings,
             prefs: RefCell::new(
@@ -430,7 +433,9 @@ impl Window {
             async move {
                 while let Ok((index, query, result)) = lookup_rx.recv().await {
                     let Some(win) = win.upgrade() else { break };
-                    if let (Ok(r), Some(db), Some(p)) = (&result, &win.db, win.lookup.providers().get(index)) {
+                    if let (Ok(r), Some(db), Some(p)) = (&result, &win.db, win.lookup.providers().get(index))
+                        && p.kind != "llm"
+                    {
                         db.cache_lookup(&p.name, &query, r, library::now());
                     }
                     win.lookup.show(index, &query, result);
@@ -1031,13 +1036,20 @@ impl Window {
     /// Look the focused text up with the provider on `key`.
     fn look_up(&self, key: char) {
         let Some(index) = self.lookup.provider_for_key(key) else { return };
+        let (title, authors) = self.current.borrow().as_ref().map(|c| (c.book.title.clone(), c.book.authors.clone())).unwrap_or_default();
         let (text, lang) = match self.focus.borrow().as_ref() {
-            Some(Focus::Text(s)) => (s.text.clone(), s.lang.clone()),
+            Some(Focus::Text(s)) => {
+                self.lookup_context.replace(LookupContext { title, authors, chapter: s.chapter.clone(), passage: s.context.clone(), language: String::new() });
+                (s.text.clone(), s.lang.clone())
+            }
             Some(Focus::Highlight(id)) => match self.annotations.borrow().iter().find(|a| a.id == *id) {
-                Some(a) => (a.text.clone(), self.current.borrow().as_ref().and_then(|c| c.book.language.clone())),
+                Some(a) => {
+                    self.lookup_context.replace(LookupContext { title, authors, chapter: a.chapter.clone(), passage: String::new(), language: String::new() });
+                    (a.text.clone(), self.current.borrow().as_ref().and_then(|c| c.book.language.clone()))
+                }
                 None => return,
             },
-            // From the card itself: same text, another provider.
+            // From the card itself: same text and context, another provider.
             None if self.lookup.is_open() => self.lookup.query(),
             None => return,
         };
@@ -1059,13 +1071,16 @@ impl Window {
             return;
         }
         self.lookup.open(index, &text, lang.as_deref());
-        if let Some(cached) = self.db.as_ref().and_then(|db| db.cached_lookup(&spec.name, &text, library::now())) {
+        // An agent's answer depends on the passage around the text, so it isn't cached.
+        let cached = (spec.kind != "llm").then(|| self.db.as_ref().and_then(|db| db.cached_lookup(&spec.name, &text, library::now()))).flatten();
+        if let Some(cached) = cached {
             self.lookup.show(index, &text, Ok(cached));
             return;
         }
         let tx = self.lookup_tx.clone();
+        let ctx = self.lookup_context.borrow().clone();
         std::thread::spawn(move || {
-            let result = lookups::run(&spec, &text, lang.as_deref());
+            let result = lookups::run_in(&spec, &text, lang.as_deref(), &ctx);
             let _ = tx.send_blocking((index, text, result));
         });
     }

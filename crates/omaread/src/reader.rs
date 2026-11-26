@@ -97,6 +97,9 @@ pub struct Selection {
     #[serde(default)]
     pub fraction: f64,
     pub rect: Option<Rect>,
+    /// The paragraph the selection is in, for lookups that read around it.
+    #[serde(default)]
+    pub context: String,
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]

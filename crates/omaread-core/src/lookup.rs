@@ -16,10 +16,10 @@ const TIMEOUT: Duration = Duration::from_secs(8);
 /// Longer selections are cut before they're sent anywhere.
 const MAX_QUERY: usize = 2000;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ProviderSpec {
     pub name: String,
-    /// `builtin.wiktionary`, `builtin.wikipedia`, `builtin.translate`, `command` or `url`.
+    /// `builtin.wiktionary`, `builtin.wikipedia`, `builtin.translate`, `command`, `url` or `llm`.
     pub kind: String,
     /// The key that picks it, from a selection or the lookup card.
     pub key: String,
@@ -35,18 +35,33 @@ pub struct ProviderSpec {
     /// `builtin.wikipedia`: a fixed language, else the book's.
     #[serde(default)]
     pub lang: String,
+    /// `llm`: which agent answers (else `[llm] agent`), with which model
+    /// (else its `[llm.<agent>] model`) and prompt (else `[llm] prompt`).
+    #[serde(default)]
+    pub agent: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub prompt: String,
+    /// `llm`: the `[llm]` settings, filled in only when they're enabled.
+    #[serde(skip)]
+    pub llm: Option<crate::llm::LlmConfig>,
+}
+
+/// What surrounds a selection, for providers that can use it (`llm`).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LookupContext {
+    pub title: String,
+    pub authors: Vec<String>,
+    pub chapter: String,
+    /// The paragraph around the selection.
+    pub passage: String,
+    /// The text's language tag (`en`, `es-ES`), if known.
+    pub language: String,
 }
 
 pub fn default_providers() -> Vec<ProviderSpec> {
-    let p = |name: &str, kind: &str, key: &str| ProviderSpec {
-        name: name.into(),
-        kind: kind.into(),
-        key: key.into(),
-        command: vec![],
-        url: String::new(),
-        pair: vec![],
-        lang: String::new(),
-    };
+    let p = |name: &str, kind: &str, key: &str| ProviderSpec { name: name.into(), kind: kind.into(), key: key.into(), ..ProviderSpec::default() };
     vec![
         p("Dictionary", "builtin.wiktionary", "d"),
         p("Wikipedia", "builtin.wikipedia", "w"),
@@ -67,6 +82,16 @@ pub struct LookupResult {
 /// Look `text` up with a provider. Blocking: call it off the UI thread.
 /// `lang` is the language of the text, if the book says.
 pub fn run(spec: &ProviderSpec, text: &str, lang: Option<&str>) -> Result<LookupResult, String> {
+    run_in(spec, text, lang, &LookupContext::default())
+}
+
+/// [`run`], with what surrounds the selection.
+pub fn run_in(spec: &ProviderSpec, text: &str, lang: Option<&str>, ctx: &LookupContext) -> Result<LookupResult, String> {
+    let mut ctx = ctx.clone();
+    if ctx.language.is_empty() {
+        ctx.language = lang.unwrap_or_default().to_string();
+    }
+    let ctx = &ctx;
     let text: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let text: String = text.chars().take(MAX_QUERY).collect();
     if text.is_empty() {
@@ -82,6 +107,7 @@ pub fn run(spec: &ProviderSpec, text: &str, lang: Option<&str>) -> Result<Lookup
         "builtin.translate" | "builtin.google-translate" => translate(&text, lang.as_deref(), &spec.pair),
         "command" => command(&spec.command, &text),
         "url" => url(&spec.url, &text),
+        "llm" => crate::llm::run(spec, &text, ctx),
         other => Err(format!("unknown provider kind: {other}")),
     }
 }
