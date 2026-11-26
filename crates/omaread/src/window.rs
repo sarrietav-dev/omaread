@@ -130,6 +130,8 @@ pub struct Window {
     /// The page's links are labelled, waiting for one to be typed.
     hints: Cell<bool>,
     image: Rc<ImageView>,
+    /// Media controls, while reading aloud.
+    mpris: RefCell<Option<crate::mpris::Mpris>>,
 }
 
 /// A place to open a book at, from `omaread open`.
@@ -434,6 +436,7 @@ impl Window {
             footnote,
             hints: Cell::new(false),
             image,
+            mpris: RefCell::default(),
         });
         if let Some(speed) = win.db.as_ref().and_then(|db| db.setting(SPEED_SETTING).ok().flatten()).and_then(|s| ReadingSpeed::from_setting(&s)) {
             win.speed.set(speed);
@@ -870,6 +873,9 @@ impl Window {
                 self.update_status(&location);
                 self.record(&location);
                 self.last_location.replace(Some(location));
+                if self.mpris.borrow().is_some() {
+                    self.sync_mpris();
+                }
             }
             Event::ExternalLink { href } => self.open_link(&href),
             Event::PageCrashed { gave_up: false } => self.show_toast("The page crashed and was reloaded", true),
@@ -1395,6 +1401,7 @@ impl Window {
         }
         self.tts_bar.root.set_visible(false);
         self.refresh_voice_panel();
+        self.mpris.take();
     }
 
     fn change_rate(&self, delta: i32) {
@@ -1533,8 +1540,56 @@ impl Window {
         }
     }
 
+    /// What the media controls show: the book, the chapter, playing or not.
+    fn mpris_state(&self) -> Option<crate::mpris::State> {
+        let playing = self.speech.borrow().as_ref()?.playing;
+        let current = self.current.borrow();
+        let book = &current.as_ref()?.book;
+        let chapter = self.last_location.borrow().as_ref().and_then(|l| l.toc_label.clone()).unwrap_or_default();
+        Some(crate::mpris::State { playing, book: book.title.clone(), authors: book.authors.clone(), chapter, cover: book.cover.clone() })
+    }
+
+    /// Start, update or end the media controls to match reading aloud.
+    fn sync_mpris(&self) {
+        let Some(state) = self.mpris_state() else {
+            self.mpris.take();
+            return;
+        };
+        if let Some(mpris) = self.mpris.borrow().as_ref() {
+            mpris.update(state);
+            return;
+        }
+        let win = self.me.borrow().clone();
+        let mpris = crate::mpris::Mpris::start(state, move |command| {
+            // After the D-Bus call returns: a stop drops the player that's answering it.
+            let win = win.clone();
+            glib::idle_add_local_once(move || {
+                if let Some(win) = win.upgrade() {
+                    win.on_media_command(command);
+                }
+            });
+        });
+        self.mpris.replace(Some(mpris));
+    }
+
+    fn on_media_command(&self, command: crate::mpris::Command) {
+        use crate::mpris::Command;
+        let playing = self.speech.borrow().as_ref().map(|s| s.playing);
+        match command {
+            Command::PlayPause => self.toggle_speech(false),
+            Command::Play if playing == Some(false) => self.toggle_speech(false),
+            Command::Pause if playing == Some(true) => self.toggle_speech(false),
+            Command::Play | Command::Pause => {}
+            Command::Stop => self.stop_speech(),
+            Command::Next => self.step_sentence(1),
+            Command::Previous => self.step_sentence(-1),
+            Command::Raise => self.window.present(),
+        }
+    }
+
     fn update_tts_bar(&self) {
         self.refresh_voice_panel();
+        self.sync_mpris();
         let speech = self.speech.borrow();
         let Some(speech) = speech.as_ref() else {
             self.tts_bar.root.set_visible(false);

@@ -74,7 +74,9 @@ folders = ["~/Books", "/mnt/nas/books"]
   next sentences are ready before they are needed, and stopping and starting
   again resumes at the sentence you stopped on. A compact player provides
   playback, sentence, speed and voice controls. Roman numerals read as
-  numbers (`Part I` is "part one"). Piper still works through
+  numbers (`Part I` is "part one"). While it reads, Omaread is an MPRIS
+  player: media keys, `playerctl` and the bar can pause it and skip
+  sentences, and see the book, chapter and cover. Piper still works through
   speech-dispatcher if you set `[tts] engine = "piper"`.
 - **Follows your theme live.** Any installed Omarchy theme can be the app's,
   or one book's.

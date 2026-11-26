@@ -7,6 +7,7 @@ mod image_view;
 mod keys;
 mod library_view;
 mod lookup_view;
+mod mpris;
 mod palette;
 mod reader;
 mod search_view;
