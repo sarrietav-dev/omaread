@@ -71,6 +71,7 @@ pub fn library_commands() -> Vec<Entry> {
     let a = |name, keys: &str, action| Entry { name, keys: keys.into(), run: Run::Action(action) };
     vec![
         a("Open", "enter", Open),
+        a("Continue reading", "c", Resume(0)),
         a("Filter books", "/", Filter),
         a("Sort by…", "o", Sort),
         a("Next shelf", "tab", NextShelf),

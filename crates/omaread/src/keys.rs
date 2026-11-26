@@ -106,6 +106,8 @@ pub enum Action {
     RemoveFolder,
     /// Open or close the folder the sidebar is on.
     ToggleFolder,
+    /// Open the n-th book in progress (0: the latest).
+    Resume(usize),
     Rescan,
     // Both
     Help,
@@ -194,6 +196,7 @@ pub const NAMED: &[(&str, Action)] = &[
     ("add_folder", Action::AddFolder),
     ("remove_folder", Action::RemoveFolder),
     ("toggle_folder", Action::ToggleFolder),
+    ("continue_reading", Action::Resume(0)),
     ("rescan", Action::Rescan),
     ("help", Action::Help),
     ("close", Action::Close),
@@ -769,6 +772,8 @@ fn library(key: Key, ch: Option<char>, shift: bool) -> Option<Action> {
         ':' => Some(Action::CommandLine),
         '?' => Some(Action::Help),
         'o' => Some(Action::Sort),
+        'c' => Some(Action::Resume(0)),
+        c @ '1'..='6' => Some(Action::Resume(c as usize - '1' as usize)),
         'q' => Some(Action::Close),
         _ => None,
     }
@@ -893,6 +898,8 @@ mod tests {
         assert_eq!(press(&mut map, Context::Library, 'h'), Some(Action::Move(-1, 0)));
         assert_eq!(press(&mut map, Context::Library, 'g'), None);
         assert_eq!(press(&mut map, Context::Library, 'r'), Some(Action::Rescan));
+        assert_eq!(press(&mut map, Context::Library, 'c'), Some(Action::Resume(0)));
+        assert_eq!(press(&mut map, Context::Library, '3'), Some(Action::Resume(2)));
     }
 
     #[test]

@@ -497,6 +497,24 @@ button.library-add:hover {{ color: {accent_text}; border-color: {accent}; backgr
   outline: none;
 }}
 .library-empty {{ color: {muted}; font-size: {body_small}px; }}
+.continue-row {{
+  padding: {md}px {row_x}px;
+  border-bottom: {hairline}px solid {rule};
+}}
+.continue-row .heading {{ color: {muted}; font-size: {caption}px; }}
+button.continue-item {{
+  padding: {xs}px;
+  background-image: none;
+  background-color: transparent;
+  border: {hbw}px solid transparent;
+  box-shadow: none;
+  color: {fg};
+}}
+button.continue-item:hover {{ background-color: {hover_fill}; border-color: {hover_border}; }}
+button.continue-item:focus-visible {{ outline: {hairline}px solid {accent}; outline-offset: 2px; }}
+.continue-item .cover {{ background-color: {surface}; }}
+.continue-item .caption {{ color: {muted}; font-size: {caption}px; }}
+.continue-item .title {{ font-size: {caption}px; }}
 
 gridview.library-grid {{ background: none; padding: {lg}px {sm}px; }}
 gridview.library-grid > child {{

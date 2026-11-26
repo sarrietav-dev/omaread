@@ -2558,6 +2558,11 @@ impl Window {
             (Context::Library, Action::PrevShelf) => self.library.step_shelf(-1),
             (Context::Library, Action::AddFolder) => self.add_folder(),
             (Context::Library, Action::ToggleFolder) => self.library.toggle_folder(),
+            (Context::Library, Action::Resume(n)) => {
+                if !self.library.resume(n) {
+                    self.show_toast(if n == 0 { "No book in progress yet" } else { "Not that many books in progress" }, false);
+                }
+            }
             (Context::Library, Action::RemoveFolder) => match self.library.current_folder() {
                 Some(path) if self.folders().contains(&path) => self.remove_folder(&path),
                 Some(path) => {

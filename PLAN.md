@@ -120,7 +120,8 @@ Main crates: `gtk4`, `libadwaita`, `webkit6`, `rusqlite` (bundled),
   * Sort by recent, title, author, progress or added.
   * `/` filters across title and author.
   * Shelves are listed in a rail; tab cycles through them.
-  * A "Continue reading" row sits at the top.
+  * A "Continue reading" row sits at the top of every shelf but Reading,
+    with the six latest books in progress; `c` and `1`–`6` open them.
 * **Foliate import:** read `~/.local/share/com.github.johnfactotum.Foliate/*.json`
   (31 books, 2 with annotations) once on first run, or with
   `omaread import-foliate`. Brings over the last position, bookmarks and

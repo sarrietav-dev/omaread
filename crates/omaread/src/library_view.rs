@@ -85,6 +85,12 @@ pub struct LibraryView {
     hint: gtk::Label,
     entry: gtk::Entry,
     empty: gtk::Label,
+    /// The books in progress, most recent first, above the grid.
+    continue_row: gtk::Box,
+    continue_items: gtk::Box,
+    /// What the row offers, in order, for `c` and `1`–`6`.
+    continuing: RefCell<Vec<Book>>,
+    on_open: Rc<dyn Fn(Book)>,
     state: Rc<RefCell<State>>,
     /// Set while the rail is being rebuilt, so selecting rows doesn't refilter.
     rebuilding: Cell<bool>,
@@ -165,7 +171,7 @@ impl LibraryView {
             .max_columns(16)
             .css_classes(["library-grid"])
             .build();
-        let on_open = Rc::new(on_open);
+        let on_open: Rc<dyn Fn(Book)> = Rc::new(on_open);
         grid.connect_activate({
             let selection = selection.clone();
             let on_open = on_open.clone();
@@ -209,9 +215,21 @@ impl LibraryView {
             .css_classes(["library-empty"])
             .build();
 
+        let continue_items = gtk::Box::builder().spacing(8).build();
+        let continue_scroller = gtk::ScrolledWindow::builder()
+            .child(&continue_items)
+            .vscrollbar_policy(gtk::PolicyType::Never)
+            .hscrollbar_policy(gtk::PolicyType::Automatic)
+            .propagate_natural_height(true)
+            .build();
+        let continue_row = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(6).visible(false).css_classes(["continue-row"]).build();
+        continue_row.append(&gtk::Label::builder().label("Continue reading   c or 1–6").xalign(0.0).css_classes(["heading"]).build());
+        continue_row.append(&continue_scroller);
+
         let main = gtk::Box::builder().orientation(gtk::Orientation::Vertical).hexpand(true).css_classes(["library-main"]).build();
         main.append(&header);
         main.append(&entry);
+        main.append(&continue_row);
         main.append(&empty);
         main.append(&scroller);
 
@@ -246,6 +264,10 @@ impl LibraryView {
             hint,
             entry,
             empty,
+            continue_row,
+            continue_items,
+            continuing: RefCell::default(),
+            on_open: on_open.clone(),
             state,
             rebuilding: Cell::new(false),
             scanning: Cell::new(false),
@@ -527,6 +549,88 @@ impl LibraryView {
     fn refilter(&self) {
         self.filter.changed(gtk::FilterChange::Different);
         self.update_header();
+        self.render_continue();
+    }
+
+    /// The row of books in progress: on every shelf but Reading (which is
+    /// that list already), and not while filtering.
+    fn render_continue(&self) {
+        let (show, books) = {
+            let s = self.state.borrow();
+            let show = s.shelf != Shelf::Reading && s.query.is_empty();
+            let mut books: Vec<Book> = if show { self.books().into_iter().filter(Book::in_progress).collect() } else { Vec::new() };
+            books.sort_by(|a, b| b.opened_at().cmp(&a.opened_at()));
+            books.truncate(6);
+            (show && !books.is_empty(), books)
+        };
+        if *self.continuing.borrow() == books && self.continue_row.is_visible() == show {
+            return;
+        }
+        while let Some(child) = self.continue_items.first_child() {
+            self.continue_items.remove(&child);
+        }
+        for (i, book) in books.iter().enumerate() {
+            self.continue_items.append(&self.continue_item(i, book));
+        }
+        self.continuing.replace(books);
+        self.continue_row.set_visible(show);
+    }
+
+    fn continue_item(&self, i: usize, book: &Book) -> gtk::Button {
+        // An Image keeps its size; a Picture would ask for the cover's own height.
+        let picture = gtk::Image::builder().pixel_size(72).build();
+        match book.cover.as_deref().and_then(cover_texture) {
+            Some(texture) => picture.set_paintable(Some(&texture)),
+            None => picture.set_icon_name(Some("x-office-document-symbolic")),
+        }
+        let title = gtk::Label::builder()
+            .label(&book.title)
+            .xalign(0.0)
+            .wrap(true)
+            .lines(2)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .max_width_chars(18)
+            .width_chars(18)
+            .css_classes(["title"])
+            .build();
+        let caption = gtk::Label::builder().label(format!("{}  ·  {:.0}%", i + 1, book.fraction() * 100.0)).xalign(0.0).css_classes(["caption"]).build();
+        let text = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(4).valign(gtk::Align::Center).build();
+        text.append(&title);
+        text.append(&caption);
+        let content = gtk::Box::builder().spacing(8).build();
+        content.append(&picture);
+        content.append(&text);
+        let button = gtk::Button::builder().child(&content).tooltip_text(&book.title).css_classes(["continue-item"]).build();
+        button.connect_clicked({
+            let book = book.clone();
+            let on_open = self.on_open.clone();
+            move |_| on_open(book.clone())
+        });
+        button
+    }
+
+    /// Open the `n`-th book in progress (0 is the latest). False if there's none.
+    pub fn resume(&self, n: usize) -> bool {
+        let book = {
+            let shown = self.continuing.borrow();
+            match shown.get(n) {
+                Some(b) => Some(b.clone()),
+                // On the Reading shelf the row is hidden; c still means the latest.
+                None if n == 0 => {
+                    let mut books: Vec<Book> = self.books().into_iter().filter(Book::in_progress).collect();
+                    books.sort_by(|a, b| b.opened_at().cmp(&a.opened_at()));
+                    books.into_iter().next()
+                }
+                None => None,
+            }
+        };
+        match book {
+            Some(book) => {
+                (self.on_open)(book);
+                true
+            }
+            None => false,
+        }
     }
 
     fn update_header(&self) {

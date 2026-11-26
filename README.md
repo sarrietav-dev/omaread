@@ -54,6 +54,8 @@ folders = ["~/Books", "/mnt/nas/books"]
   can be changed in `config.toml`.
 - **A library that stays out of the way.** A cover grid over your books, with
   your folders as a tree in the sidebar, filter and sort, and reading progress under each cover.
+  A "Continue reading" row keeps the books in progress at hand: `c` opens the
+  latest, `1`–`6` the others.
 - **Made for reading.** Paginated (auto columns when wide) or scrolled,
   publisher fonts by default, with per-book overrides for theme, font, size,
   line height, justification, hyphenation, margins and width.
@@ -124,6 +126,7 @@ Library
 |---|---|
 | `h` `j` `k` `l` / arrows | move |
 | Enter | open |
+| `c` / `1`–`6` | continue the latest book / one from the Continue reading row |
 | `/` | filter the whole library (Esc clears) |
 | `o` | cycle sort: recent, title, author, progress, added |
 | Tab / Shift-Tab | next / previous folder in the sidebar |
