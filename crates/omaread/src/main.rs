@@ -1,6 +1,7 @@
 mod annotations_view;
 mod assets;
 mod cli;
+mod footnote_view;
 mod help_view;
 mod keys;
 mod library_view;

@@ -118,6 +118,8 @@ pub enum Context {
     Selection,
     /// Selecting text from the keyboard.
     Visual,
+    /// A footnote's card is open.
+    Note,
     /// The highlights or bookmarks panel is open.
     Annotations,
     /// The search results have the keys.
@@ -192,6 +194,7 @@ pub fn context_by_name(name: &str) -> Option<Context> {
         "settings" => Context::Settings,
         "selection" => Context::Selection,
         "visual" => Context::Visual,
+        "note" => Context::Note,
         "annotations" => Context::Annotations,
         "search" => Context::Search,
         "lookup" => Context::Lookup,
@@ -311,6 +314,7 @@ impl Keymap {
                 Context::Settings => settings(key, ch),
                 Context::Selection => selection(key, ch),
                 Context::Visual => visual(key, ch),
+                Context::Note => note(key, ch),
                 Context::Annotations => annotations(key, ch),
                 Context::Search => search(key, ch),
                 Context::Lookup => lookup(key, ch),
@@ -521,6 +525,23 @@ fn visual(key: Key, ch: Option<char>) -> Option<Action> {
         '0' | '^' => Some(Action::Extend(LineBoundary, false)),
         'o' => Some(Action::SwapEnds),
         'v' => Some(Action::Open),
+        'y' => Some(Action::Copy),
+        'q' => Some(Action::Close),
+        _ => None,
+    }
+}
+
+fn note(key: Key, ch: Option<char>) -> Option<Action> {
+    match key {
+        Key::Escape => return Some(Action::Close),
+        Key::Return | Key::KP_Enter => return Some(Action::Open),
+        Key::Up => return Some(Action::Move(0, -1)),
+        Key::Down => return Some(Action::Move(0, 1)),
+        _ => {}
+    }
+    match ch? {
+        'j' => Some(Action::Move(0, 1)),
+        'k' => Some(Action::Move(0, -1)),
         'y' => Some(Action::Copy),
         'q' => Some(Action::Close),
         _ => None,

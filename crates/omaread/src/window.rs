@@ -18,6 +18,7 @@ use omaread_core::speech;
 use omaread_core::speed::{ReadingSpeed, format_minutes};
 
 use crate::annotations_view::{AnnotationsPanel, NoteEditor, SelectionAction, SelectionBar, SelectionInfo};
+use crate::footnote_view::FootnoteView;
 use crate::help_view::HelpView;
 use crate::keys::{Action, Context, Keymap};
 use crate::library_view::LibraryView;
@@ -124,6 +125,7 @@ pub struct Window {
     visual_then: Cell<Option<Action>>,
     /// The keys visual mode takes, over the book while it's on.
     mode_hint: gtk::Label,
+    footnote: Rc<FootnoteView>,
 }
 
 /// A place to open a book at, from `omaread open`.
@@ -331,6 +333,8 @@ impl Window {
             .css_classes(["toast", "mode-hint"])
             .build();
         reader_overlay.add_overlay(&mode_hint);
+        let footnote = FootnoteView::new();
+        reader_overlay.add_overlay(&footnote.root);
 
         let stack = gtk::Stack::builder()
             .transition_type(gtk::StackTransitionType::Crossfade)
@@ -421,6 +425,7 @@ impl Window {
             visual: Cell::new(false),
             visual_then: Cell::new(None),
             mode_hint,
+            footnote,
         });
         if let Some(speed) = win.db.as_ref().and_then(|db| db.setting(SPEED_SETTING).ok().flatten()).and_then(|s| ReadingSpeed::from_setting(&s)) {
             win.speed.set(speed);
@@ -551,6 +556,7 @@ impl Window {
         let cap = (width - 32).max(240);
         self.palette.root.set_width_request(cap.min(560));
         self.lookup.root.set_width_request(cap.min(460));
+        self.footnote.root.set_width_request(cap.min(440));
         self.annotations_panel.root.set_width_request(cap.min(520));
         self.voice.root.set_width_request(cap.min(420));
         self.settings.root.set_width_request(cap.min(400));
@@ -701,6 +707,8 @@ impl Window {
             Context::Settings
         } else if self.annotations_panel.is_open() {
             Context::Annotations
+        } else if self.footnote.is_open() {
+            Context::Note
         } else if self.visual.get() {
             Context::Visual
         } else if self.selection_bar.is_open() {
@@ -751,6 +759,10 @@ impl Window {
                 }
             }
             Event::Visual { active, text } => self.show_visual(active, &text),
+            Event::Footnote { href, text, rect } => {
+                self.close_selection();
+                self.footnote.show(&href, &text, rect, self.page_size());
+            }
             Event::SelectionCleared => {
                 if matches!(*self.focus.borrow(), Some(Focus::Text(_))) {
                     self.selection_bar.hide();
@@ -828,6 +840,7 @@ impl Window {
                 self.library.focus();
             }
             Event::Relocate(location) => {
+                self.footnote.close();
                 if matches!(*self.focus.borrow(), Some(Focus::Text(_))) {
                     self.selection_bar.hide();
                     self.focus.take();
@@ -1578,6 +1591,7 @@ impl Window {
 
     /// Every panel and bar over the book, closed.
     fn close_overlays(&self) {
+        self.footnote.close();
         self.selection_bar.hide();
         self.note_editor.close();
         self.annotations_panel.close();
@@ -2254,6 +2268,20 @@ impl Window {
                 self.reader.call("visualDone", "");
             }
             (Context::Visual, Action::Close) => self.end_visual(),
+            (Context::Note, Action::Move(_, dy)) => self.footnote.scroll(dy),
+            (Context::Note, Action::Open) => {
+                let href = self.footnote.href();
+                self.footnote.close();
+                if let Some(href) = href {
+                    self.reader.call("goTo", &serde_json::to_string(&href).unwrap_or_default());
+                }
+            }
+            (Context::Note, Action::Copy) => {
+                self.window.clipboard().set_text(&self.footnote.text());
+                self.show_toast("Copied", false);
+                self.footnote.close();
+            }
+            (Context::Note, Action::Close) => self.footnote.close(),
             (Context::Selection, Action::Highlight) => self.toggle_highlight(),
             (Context::Selection, Action::Color(i)) => self.color(Some(i)),
             (Context::Selection, Action::Note) => {

@@ -57,6 +57,8 @@ folders = ["~/Books", "/mnt/nas/books"]
 - **Made for reading.** Paginated (auto columns when wide) or scrolled,
   publisher fonts by default, with per-book overrides for theme, font, size,
   line height, justification, hyphenation, margins and width.
+- **Footnotes in place.** A link to a footnote or endnote opens the note in
+  a card beside it; Enter goes to the note, `y` copies it.
 - **Annotations.** Highlights in five colours, notes, bookmarks, a panel for
   each, export to Markdown or JSON, and a one-shot import from Foliate.
 - **Lookups from a selection.** Wiktionary, Wikipedia and Google Translate

@@ -51,6 +51,12 @@ pub enum Event {
         #[serde(default)]
         text: String,
     },
+    /// A link to a footnote was followed: the note, to show in a card.
+    Footnote {
+        href: String,
+        text: String,
+        rect: Option<Rect>,
+    },
     /// A highlight was clicked.
     AnnotationClick {
         cfi: String,

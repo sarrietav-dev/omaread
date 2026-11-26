@@ -11,6 +11,7 @@ import { colorCSS } from './colors.js'
 import { installSentenceSegmenter } from './sentences.js'
 import { readingOrder, textEdges } from './sections.js'
 import { resolveDocumentViewportUnits } from './viewport-units.js'
+import { isNoteRef, noteBlock, noteText } from './notes.js'
 
 const emit = msg => globalThis.webkit.messageHandlers.omaread.postMessage(JSON.stringify(msg))
 
@@ -414,6 +415,24 @@ const visualText = () => {
 
 const visualReport = () => emit({ type: 'visual', active: Boolean(visual), text: visual ? visualText() : '' })
 
+// Read the note a link points at and hand it to Rust; jump there instead
+// when it can't be read.
+const showNote = async (book, href, a) => {
+    try {
+        const target = book.resolveHref(href)
+        const doc = target ? await book.sections[target.index]?.createDocument?.() : null
+        const anchor = doc ? target.anchor(doc) : null
+        const text = noteText(noteBlock(anchor?.nodeType === 1 ? anchor : null))
+        if (!text) return view.goTo(href)
+        const range = a.ownerDocument.createRange()
+        range.selectNode(a)
+        emit({ type: 'footnote', href, text, rect: rectOf(range) })
+    } catch (e) {
+        console.error('footnote', e)
+        view.goTo(href)
+    }
+}
+
 const metadataOf = book => {
     const text = x => !x ? '' : typeof x === 'string' ? x : x[Object.keys(x)[0]] ?? ''
     const names = x => [x ?? []].flat().map(a => text(typeof a === 'string' ? a : a?.name)).filter(Boolean)
@@ -457,6 +476,14 @@ const open = async file => {
             pageStart: (() => { try { return cfi ? CFI.collapse(cfi) : null } catch { return null } })(),
             pageLabel: pageItem?.label ?? null,
         })
+    })
+    // A link to a footnote shows the note in a card instead of jumping.
+    view.addEventListener('link', e => {
+        const { a, href } = e.detail
+        const styleOf = el => a.ownerDocument?.defaultView?.getComputedStyle(el)
+        if (!isNoteRef(a, styleOf)) return
+        e.preventDefault()
+        showNote(book, href, a)
     })
     view.addEventListener('external-link', e => {
         e.preventDefault()

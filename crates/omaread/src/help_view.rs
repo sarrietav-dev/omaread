@@ -55,6 +55,10 @@ fn sections(context: Context) -> Vec<(&'static str, Context, Vec<Row>)> {
                 ("Select (opens the card)", Open, &["enter", "v"]),
                 ("Copy", Copy, &["y"]), ("Cancel", Close, &["escape", "q"]),
             ]),
+            ("Footnote card", Context::Note, vec![
+                ("Go to the note", Open, &["enter"]), ("Copy", Copy, &["y"]),
+                ("Scroll", Move(0, 1), &["j", "k"]), ("Close", Close, &["escape", "q"]),
+            ]),
             ("Selection", Context::Selection, vec![
                 ("Highlight / remove highlight", Highlight, &["h"]), ("Add note", Note, &["a"]),
                 ("Copy", Copy, &["y"]), ("Delete highlight", Delete, &["x"]),
