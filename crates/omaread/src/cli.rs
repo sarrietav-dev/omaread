@@ -143,6 +143,7 @@ const COMMANDS: &[Spec] = &[
         ("--at CFI", "an EPUB CFI, as annotations print it"), ("--fraction F", "a position from 0 to 1"), ("--chapter N", "the contents entry numbered N, else the N-th"),
     ]},
     Spec { name: "status", usage: "omaread status [--json]", about: "What you are reading: title, chapter, progress, time left.", options: &[("--json", "JSON output")] },
+    Spec { name: "stats", usage: "omaread stats [--days N] [--json]", about: "Reading time per day, streaks, the books read most and the books finished.", options: &[("--days N", "days of history (default 14)"), ("--json", "JSON output")] },
     Spec { name: "lookup", usage: "omaread lookup <key> <text…> [--lang xx]", about: "What the lookup card would show for a provider key (d, w, t, …).", options: &[("--lang xx", "the text's language")] },
     Spec { name: "scan", usage: "omaread scan", about: "Refresh the library without opening a window.", options: &[] },
     Spec { name: "check-library", usage: "omaread check-library [--json]", about: "Open every book and report the ones that won't.", options: &[("--json", "JSON output")] },
@@ -152,7 +153,7 @@ const COMMANDS: &[Spec] = &[
 
 /// The commands this module answers. `None` for anything else.
 pub fn run(command: &str, args: &[String]) -> Option<u8> {
-    let valued = ["query", "limit", "chapter", "section", "offset", "max-chars", "kind", "at", "fraction"];
+    let valued = ["query", "limit", "chapter", "section", "offset", "max-chars", "kind", "at", "fraction", "days"];
     let result = Args::parse(args, &valued).and_then(|args| {
         let out = match command {
             "commands" => Ok(commands(&args)),
@@ -162,6 +163,7 @@ pub fn run(command: &str, args: &[String]) -> Option<u8> {
             "text" => text(&args),
             "search" => search(&args),
             "annotations" => annotations(&args),
+            "stats" => stats(&args),
             _ => return Ok(None),
         };
         out.map(|o| Some((o, args.json())))
@@ -584,6 +586,16 @@ fn annotations(args: &Args) -> Result<Output, Error> {
     Ok(Output { json: json!({ "annotations": list, "total": total, "truncated": total > shown.len() }), text: out })
 }
 
+fn stats(args: &Args) -> Result<Output, Error> {
+    let db = open_db()?;
+    let days = args.number("days")?.unwrap_or(14).clamp(1, 3660);
+    let all = books(&db)?;
+    let today = gtk::glib::DateTime::now_local().ok().and_then(|d| d.format("%F").ok()).map(|s| s.to_string()).unwrap_or_default();
+    let report = omaread_core::stats::report(&db, &today, days, &all).map_err(|e| Error::failed(e.to_string()))?;
+    let text = report.to_text();
+    Ok(Output { json: serde_json::to_value(&report).unwrap_or_default(), text })
+}
+
 /// Where `omaread open` should land, as the hint passed to the running app.
 pub fn open_hint(args: &Args) -> Result<String, Error> {
     if let Some(cfi) = args.value("at") {
@@ -638,7 +650,7 @@ mod tests {
 
     #[test]
     fn every_command_is_described() {
-        for name in ["list", "show", "toc", "text", "search", "annotations", "open", "commands"] {
+        for name in ["list", "show", "toc", "text", "search", "annotations", "open", "stats", "commands"] {
             assert!(COMMANDS.iter().any(|c| c.name == name), "{name}");
         }
     }

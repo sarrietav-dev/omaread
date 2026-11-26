@@ -16,6 +16,8 @@ pub enum Command {
     GotoChapter(usize),
     /// Write the book's highlights and notes out.
     Export(ExportFormat),
+    /// Show reading time and streaks.
+    Stats,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,6 +28,9 @@ pub enum ExportFormat {
 
 pub fn parse(input: &str) -> Result<Command, String> {
     let input = input.trim().trim_start_matches(':').trim();
+    if input == "stats" {
+        return Ok(Command::Stats);
+    }
     if let Some(rest) = input.strip_prefix("export").filter(|r| r.is_empty() || r.starts_with(' ')) {
         return match rest.trim() {
             "" | "md" | "markdown" => Ok(Command::Export(ExportFormat::Markdown)),
@@ -78,6 +83,7 @@ mod tests {
         assert_eq!(parse(":export"), Ok(Command::Export(ExportFormat::Markdown)));
         assert_eq!(parse(":export json"), Ok(Command::Export(ExportFormat::Json)));
         assert!(parse(":export pdf").is_err());
+        assert_eq!(parse(":stats"), Ok(Command::Stats));
     }
 
     #[test]

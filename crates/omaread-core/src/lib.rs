@@ -16,6 +16,7 @@ pub mod lookup;
 pub mod prefs;
 pub mod speech;
 pub mod speed;
+pub mod stats;
 pub mod ssip;
 pub mod style;
 pub mod theme;

@@ -81,6 +81,20 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE progress ADD COLUMN chapter TEXT;
     ALTER TABLE progress ADD COLUMN minutes_left REAL;
     "#,
+    // 7: reading time per day and book, and finished books
+    r#"
+    CREATE TABLE reading_log (
+        day       TEXT NOT NULL,
+        identity  TEXT NOT NULL,
+        seconds   REAL NOT NULL DEFAULT 0,
+        pages     INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (day, identity)
+    );
+    CREATE TABLE finished (
+        identity     TEXT PRIMARY KEY,
+        finished_at  INTEGER NOT NULL
+    );
+    "#,
 ];
 
 pub struct Db {

@@ -30,6 +30,7 @@ use crate::palette::{Palette, Run};
 use crate::search_view::{Hit, SearchView};
 use crate::service::Service;
 use crate::settings_view::{Scope, SettingsView};
+use crate::stats_view::StatsView;
 use crate::toc_view::{TocItem, TocView};
 use crate::theming::Theming;
 use crate::voice_view::{SpeechPlayer, VoiceAction, VoicePanel, VoiceState};
@@ -132,6 +133,7 @@ pub struct Window {
     image: Rc<ImageView>,
     /// Media controls, while reading aloud.
     mpris: RefCell<Option<crate::mpris::Mpris>>,
+    stats: Rc<StatsView>,
 }
 
 /// A place to open a book at, from `omaread open`.
@@ -363,6 +365,8 @@ impl Window {
         overlay.set_child(Some(&stack));
         overlay.add_overlay(&palette.root);
         overlay.add_overlay(&help.root);
+        let stats = StatsView::new();
+        overlay.add_overlay(&stats.root);
         overlay.add_overlay(&toast);
         window.set_content(Some(&overlay));
 
@@ -437,6 +441,7 @@ impl Window {
             hints: Cell::new(false),
             image,
             mpris: RefCell::default(),
+            stats,
         });
         if let Some(speed) = win.db.as_ref().and_then(|db| db.setting(SPEED_SETTING).ok().flatten()).and_then(|s| ReadingSpeed::from_setting(&s)) {
             win.speed.set(speed);
@@ -706,6 +711,8 @@ impl Window {
     fn context(&self) -> Context {
         if self.help.is_open() {
             Context::Help
+        } else if self.stats.is_open() {
+            Context::Stats
         } else if self.stack.visible_child_name().as_deref() != Some(READER) {
             Context::Library
         } else if self.toc.is_open() {
@@ -869,6 +876,7 @@ impl Window {
                     self.selection_bar.hide();
                     self.focus.take();
                 }
+                self.log_time(&location);
                 self.learn_pace(&location);
                 self.update_status(&location);
                 self.record(&location);
@@ -1657,7 +1665,51 @@ impl Window {
                 }
             }
             Ok(Command::Export(format)) => self.export(format),
+            Ok(Command::Stats) => self.open_stats(),
             Err(e) => self.show_toast(&e, true),
+        }
+    }
+
+    fn open_stats(&self) {
+        let Some(db) = &self.db else {
+            self.show_toast("No library database, so no reading stats", true);
+            return;
+        };
+        self.save_progress();
+        let books = library::load(db).unwrap_or_default();
+        match omaread_core::stats::report(db, &today(), 14, &books) {
+            Ok(report) => self.stats.open(&report),
+            Err(e) => self.show_toast(&format!("Could not read the stats: {e}"), true),
+        }
+    }
+
+    fn close_stats(&self) {
+        self.stats.close();
+        if self.stack.visible_child_name().as_deref() == Some(READER) {
+            self.reader.view.grab_focus();
+        } else {
+            self.library.focus();
+        }
+    }
+
+    /// Time on the page just left counts as reading when it was turned (or
+    /// read aloud) forward without a long idle stretch.
+    fn log_time(&self, l: &Location) {
+        let reading_aloud = self.speech.borrow().as_ref().is_some_and(|s| s.playing);
+        let Some((at, fraction)) = self.page.borrow().as_ref().map(|p| (p.at, p.fraction)) else { return };
+        if !(self.turned.get() || reading_aloud) || l.fraction <= fraction {
+            return;
+        }
+        let seconds = at.elapsed().as_secs_f64();
+        if !(0.5..=omaread_core::stats::IDLE_SECONDS).contains(&seconds) {
+            return;
+        }
+        let (Some(db), Some(identity)) = (&self.db, self.identity()) else { return };
+        if let Err(e) = db.log_reading(&today(), &identity, seconds, 1) {
+            eprintln!("omaread: could not log reading time: {e}");
+        }
+        if l.fraction >= 0.995 {
+            let _ = db.mark_finished(&identity, library::now());
         }
     }
 
@@ -2296,6 +2348,8 @@ impl Window {
             (Context::Help, Action::First) => self.help.top(),
             (Context::Help, Action::Last) => self.help.bottom(),
             (Context::Help, Action::Close) => self.close_help(),
+            (Context::Stats, Action::Move(_, dy)) => self.stats.scroll(dy),
+            (Context::Stats, Action::Close) => self.close_stats(),
             (Context::Reader | Context::Library, Action::CommandLine) => self.palette.open(context, &self.keymap.borrow()),
             (Context::Reader, Action::Search) => self.open_search(),
             (Context::Reader | Context::Search, Action::NextHit) => self.go_to_hit(self.search.step(1)),
@@ -2581,6 +2635,11 @@ fn speed_text(multiplier: f32) -> String {
     let text = format!("{multiplier:.2}");
     let text = text.trim_end_matches('0').trim_end_matches('.');
     format!("{text}×")
+}
+
+/// Today's local date, `YYYY-MM-DD`, for the reading log.
+fn today() -> String {
+    glib::DateTime::now_local().ok().and_then(|d| d.format("%F").ok()).map(|s| s.to_string()).unwrap_or_default()
 }
 
 fn file_stem(path: &Path) -> String {

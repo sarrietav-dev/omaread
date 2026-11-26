@@ -131,6 +131,8 @@ pub enum Context {
     Hints,
     /// An image is open in the viewer.
     Image,
+    /// The reading stats card is open.
+    Stats,
     /// The highlights or bookmarks panel is open.
     Annotations,
     /// The search results have the keys.
@@ -209,6 +211,7 @@ pub fn context_by_name(name: &str) -> Option<Context> {
         "note" => Context::Note,
         "hints" => Context::Hints,
         "image" => Context::Image,
+        "stats" => Context::Stats,
         "annotations" => Context::Annotations,
         "search" => Context::Search,
         "lookup" => Context::Lookup,
@@ -330,6 +333,12 @@ impl Keymap {
                 Context::Visual => visual(key, ch),
                 Context::Note => note(key, ch),
                 Context::Image => image(key, ch),
+                Context::Stats => match (key, ch) {
+                    (Key::Escape, _) | (_, Some('q')) => Some(Action::Close),
+                    (Key::Down, _) | (_, Some('j')) => Some(Action::Move(0, 1)),
+                    (Key::Up, _) | (_, Some('k')) => Some(Action::Move(0, -1)),
+                    _ => None,
+                },
                 Context::Hints => match (key, ch) {
                     (Key::Escape, _) => Some(Action::Close),
                     (_, Some(c)) if c.is_ascii_alphabetic() => Some(Action::HintKey(c)),

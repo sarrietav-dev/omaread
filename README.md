@@ -78,6 +78,9 @@ folders = ["~/Books", "/mnt/nas/books"]
   player: media keys, `playerctl` and the bar can pause it and skip
   sentences, and see the book, chapter and cover. Piper still works through
   speech-dispatcher if you set `[tts] engine = "piper"`.
+- **Reading stats.** Time read each day (page turns and reading aloud;
+  idle stretches don't count), streaks, the books you read most and the
+  ones you finished: `:stats` in the app, `omaread stats [--json]` outside.
 - **Follows your theme live.** Any installed Omarchy theme can be the app's,
   or one book's.
 
@@ -144,7 +147,7 @@ Reading
 | `t` | table of contents (`j`/`k` move, `h`/`l` fold, Enter go) |
 | `/` | search the book (Alt+c case, Alt+w whole words, Alt+d accents) |
 | `n` / `N` | next / previous match (Esc clears) |
-| `:` | command palette: every command, fuzzy; also `:42%`, `:p 120`, `:ch 7`, `:export` |
+| `:` | command palette: every command, fuzzy; also `:42%`, `:p 120`, `:ch 7`, `:export`, `:stats` |
 | select text | a card with colours, a note and `y` copy; `h` highlight, `1`–`5` color, `a` note, `d` dictionary, `w` Wikipedia, `t` translate |
 | `f` | label the links and images on the page; type a label to follow the link or open the image |
 | `v` | select from the keyboard: `w`/`b` words, `(`/`)` sentences, `{`/`}` paragraphs, `j`/`k` lines, `o` the other end; Enter opens the card, `y` copies, Esc cancels |
@@ -331,6 +334,7 @@ omaread search <book> <text>
 omaread annotations [<book>] [--query text]
                             highlights and notes, of one book or all of them
 omaread status [--json]     what you're reading: title, chapter, progress, time left
+omaread stats [--days N]    reading time per day, streaks, books finished
 omaread scan                refresh the library without opening a window
 omaread check-library       open every book and report the ones that won't
 omaread lookup d goroutine  what the lookup card would show

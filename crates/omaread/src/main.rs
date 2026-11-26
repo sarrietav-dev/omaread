@@ -13,6 +13,7 @@ mod reader;
 mod search_view;
 mod service;
 mod settings_view;
+mod stats_view;
 mod theming;
 mod toc_view;
 mod tts;
