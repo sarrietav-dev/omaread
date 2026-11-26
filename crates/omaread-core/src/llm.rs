@@ -31,7 +31,7 @@
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -260,27 +260,36 @@ fn agent_name(agent: &str) -> &str {
 /// so it overrides the user's own.
 const OPENCODE_DENY_ALL: &str = r#"{"$schema":"https://opencode.ai/config.json","permissions":[{"action":"*","resource":"*","effect":"deny"}]}"#;
 
-/// An empty directory to run in, so the agent picks up no project's files
-/// or instructions; for OpenCode, it holds the config that takes its tools.
-fn workdir(program: &str) -> Result<PathBuf, String> {
-    let dir = std::env::temp_dir().join(format!("omaread-llm-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).map_err(|e| format!("no directory to run the agent in: {e}"))?;
-    let opencode = Path::new(program).file_name().is_some_and(|n| n == "opencode");
-    let config = dir.join("opencode.json");
-    if opencode {
+/// A fresh, private, empty directory to run in (mode 0700, a random name),
+/// so the agent picks up no project's files or instructions and nobody else
+/// can plant any; for OpenCode, it holds the config that takes its tools.
+/// Removed when dropped.
+fn workdir(program: &str) -> Result<tempfile::TempDir, String> {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::Builder::new()
+        .prefix("omaread-llm-")
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .map_err(|e| format!("no directory to run the agent in: {e}"))?;
+    if Path::new(program).file_name().is_some_and(|n| n == "opencode") {
         // Without it OpenCode would run the shell for text in a book.
-        std::fs::write(&config, OPENCODE_DENY_ALL).map_err(|e| format!("could not hold OpenCode to no tools: {e}"))?;
-    } else {
-        let _ = std::fs::remove_file(&config);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(dir.path().join("opencode.json"))
+            .and_then(|mut f| f.write_all(OPENCODE_DENY_ALL.as_bytes()))
+            .map_err(|e| format!("could not hold OpenCode to no tools: {e}"))?;
     }
     Ok(dir)
 }
 
 fn execute(argv: &[String], via: Via, prompt: &str, timeout: Duration) -> Result<String, String> {
     let (program, args) = argv.split_first().ok_or("the agent has no command")?;
+    // Kept until the agent is done with it.
+    let dir = workdir(program)?;
     let mut child = Command::new(program)
         .args(args)
-        .current_dir(workdir(program)?)
+        .current_dir(dir.path())
         .stdin(if via == Via::Stdin { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -394,11 +403,19 @@ mod tests {
     #[test]
     fn opencode_runs_beside_a_config_that_denies_every_tool() {
         let dir = workdir("/usr/bin/opencode").unwrap();
-        let config = std::fs::read_to_string(dir.join("opencode.json")).unwrap();
+        let config = std::fs::read_to_string(dir.path().join("opencode.json")).unwrap();
         let json: serde_json::Value = serde_json::from_str(&config).unwrap();
         assert_eq!(json["permissions"][0], serde_json::json!({ "action": "*", "resource": "*", "effect": "deny" }));
-        let dir = workdir("claude").unwrap();
-        assert!(!dir.join("opencode.json").exists());
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777, 0o700);
+        }
+        let other = workdir("claude").unwrap();
+        assert_ne!(dir.path(), other.path());
+        assert!(!other.path().join("opencode.json").exists());
+        let path = other.path().to_path_buf();
+        drop(other);
+        assert!(!path.exists());
     }
 
     #[test]
