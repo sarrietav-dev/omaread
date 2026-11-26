@@ -108,6 +108,8 @@ pub enum Action {
     ToggleFolder,
     /// Open the n-th book in progress (0: the latest).
     Resume(usize),
+    /// Search the highlights and notes of every book.
+    AllNotes,
     Rescan,
     // Both
     Help,
@@ -197,6 +199,7 @@ pub const NAMED: &[(&str, Action)] = &[
     ("remove_folder", Action::RemoveFolder),
     ("toggle_folder", Action::ToggleFolder),
     ("continue_reading", Action::Resume(0)),
+    ("all_highlights", Action::AllNotes),
     ("rescan", Action::Rescan),
     ("help", Action::Help),
     ("close", Action::Close),
@@ -773,6 +776,7 @@ fn library(key: Key, ch: Option<char>, shift: bool) -> Option<Action> {
         '?' => Some(Action::Help),
         'o' => Some(Action::Sort),
         'c' => Some(Action::Resume(0)),
+        'A' => Some(Action::AllNotes),
         c @ '1'..='6' => Some(Action::Resume(c as usize - '1' as usize)),
         'q' => Some(Action::Close),
         _ => None,

@@ -26,6 +26,7 @@ use crate::library_view::LibraryView;
 use crate::reader::{Event, Location, Reader, Rect, Selection, Sentence};
 use crate::tts::{self, Tts};
 use crate::lookup_view::LookupView;
+use crate::notes_view::NotesView;
 use crate::palette::{Palette, Run};
 use crate::search_view::{Hit, SearchView};
 use crate::service::Service;
@@ -134,6 +135,8 @@ pub struct Window {
     /// Media controls, while reading aloud.
     mpris: RefCell<Option<crate::mpris::Mpris>>,
     stats: Rc<StatsView>,
+    /// Highlights and notes of every book, searched as you type.
+    notes: Rc<NotesView>,
 }
 
 /// A place to open a book at, from `omaread open`.
@@ -367,6 +370,8 @@ impl Window {
         overlay.add_overlay(&help.root);
         let stats = StatsView::new();
         overlay.add_overlay(&stats.root);
+        let notes = NotesView::new();
+        overlay.add_overlay(&notes.root);
         overlay.add_overlay(&toast);
         window.set_content(Some(&overlay));
 
@@ -442,6 +447,7 @@ impl Window {
             image,
             mpris: RefCell::default(),
             stats,
+            notes,
         });
         if let Some(speed) = win.db.as_ref().and_then(|db| db.setting(SPEED_SETTING).ok().flatten()).and_then(|s| ReadingSpeed::from_setting(&s)) {
             win.speed.set(speed);
@@ -485,6 +491,22 @@ impl Window {
             move |_| {
                 if let Some(win) = win.upgrade() {
                     win.run_palette();
+                }
+            }
+        });
+        win.notes.entry.connect_activate({
+            let win = Rc::downgrade(&win);
+            move |_| {
+                if let Some(win) = win.upgrade() {
+                    win.open_chosen_note();
+                }
+            }
+        });
+        win.notes.connect_row_activated({
+            let win = Rc::downgrade(&win);
+            move || {
+                if let Some(win) = win.upgrade() {
+                    win.open_chosen_note();
                 }
             }
         });
@@ -573,6 +595,7 @@ impl Window {
         self.palette.root.set_width_request(cap.min(560));
         self.lookup.root.set_width_request(cap.min(460));
         self.footnote.root.set_width_request(cap.min(440));
+        self.notes.root.set_width_request(cap.min(640));
         self.annotations_panel.root.set_width_request(cap.min(520));
         self.voice.root.set_width_request(cap.min(420));
         self.settings.root.set_width_request(cap.min(400));
@@ -1683,6 +1706,46 @@ impl Window {
         }
     }
 
+    /// Every book's highlights, newest first, for the search across books.
+    fn open_all_notes(&self) {
+        let Some(db) = &self.db else { return };
+        let books: std::collections::HashMap<String, Book> =
+            library::load(db).unwrap_or_default().into_iter().map(|b| (b.identity.clone(), b)).collect();
+        let notes: Vec<(Book, Annotation)> = db
+            .all_annotations()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(_, a)| a.kind == Kind::Highlight)
+            .filter_map(|(id, a)| Some((books.get(&id)?.clone(), a)))
+            .collect();
+        self.palette.close();
+        self.notes.open(notes);
+    }
+
+    fn close_all_notes(&self) {
+        self.notes.close();
+        if self.stack.visible_child_name().as_deref() == Some(READER) {
+            self.reader.view.grab_focus();
+        } else {
+            self.library.focus();
+        }
+    }
+
+    /// Open the book of the highlight chosen, at the highlight.
+    fn open_chosen_note(&self) {
+        let Some((book, a)) = self.notes.selected() else { return };
+        self.notes.close();
+        let same = self.current.borrow().as_ref().is_some_and(|c| c.book.identity == book.identity);
+        if same {
+            self.close_overlays();
+            self.jump(Jump::Cfi(a.cfi));
+            self.reader.view.grab_focus();
+        } else {
+            self.open_book(book);
+            self.pending_jump.replace(Some(Jump::Cfi(a.cfi)));
+        }
+    }
+
     fn close_stats(&self) {
         self.stats.close();
         if self.stack.visible_child_name().as_deref() == Some(READER) {
@@ -2273,6 +2336,22 @@ impl Window {
             };
         }
 
+        // Searching every book's highlights: like the palette.
+        if self.notes.has_focus() {
+            let ctrl = mods.contains(gtk::gdk::ModifierType::CONTROL_MASK);
+            match key {
+                gtk::gdk::Key::Escape => self.close_all_notes(),
+                gtk::gdk::Key::Down => self.notes.move_cursor(1),
+                gtk::gdk::Key::Up => self.notes.move_cursor(-1),
+                gtk::gdk::Key::Page_Down => self.notes.move_cursor(8),
+                gtk::gdk::Key::Page_Up => self.notes.move_cursor(-8),
+                gtk::gdk::Key::n if ctrl => self.notes.move_cursor(1),
+                gtk::gdk::Key::p if ctrl => self.notes.move_cursor(-1),
+                _ => return glib::Propagation::Proceed,
+            }
+            return glib::Propagation::Stop;
+        }
+
         // The palette: Esc closes, arrows (and ctrl+n/p) choose, Enter runs.
         if self.palette.has_focus() {
             let ctrl = mods.contains(gtk::gdk::ModifierType::CONTROL_MASK);
@@ -2558,6 +2637,7 @@ impl Window {
             (Context::Library, Action::PrevShelf) => self.library.step_shelf(-1),
             (Context::Library, Action::AddFolder) => self.add_folder(),
             (Context::Library, Action::ToggleFolder) => self.library.toggle_folder(),
+            (Context::Library | Context::Reader, Action::AllNotes) => self.open_all_notes(),
             (Context::Library, Action::Resume(n)) => {
                 if !self.library.resume(n) {
                     self.show_toast(if n == 0 { "No book in progress yet" } else { "Not that many books in progress" }, false);

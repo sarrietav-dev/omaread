@@ -65,7 +65,8 @@ folders = ["~/Books", "/mnt/nas/books"]
 - **Footnotes in place.** A link to a footnote or endnote opens the note in
   a card beside it; Enter goes to the note, `y` copies it.
 - **Annotations.** Highlights in five colours, notes, bookmarks, a panel for
-  each, export to Markdown or JSON, and a one-shot import from Foliate.
+  each, a search across every book's highlights and notes (`A` in the
+  library; Enter opens the book at the highlight), export to Markdown or JSON, and a one-shot import from Foliate.
 - **Lookups from a selection.** Wiktionary, Wikipedia and Google Translate
   (Spanish ⇄ English, picked from the text), plus local programs and web
   searches of your own. Optionally, an explanation from Claude Code, Codex
@@ -127,6 +128,7 @@ Library
 | `h` `j` `k` `l` / arrows | move |
 | Enter | open |
 | `c` / `1`–`6` | continue the latest book / one from the Continue reading row |
+| `A` | search the highlights and notes of every book |
 | `/` | filter the whole library (Esc clears) |
 | `o` | cycle sort: recent, title, author, progress, added |
 | Tab / Shift-Tab | next / previous folder in the sidebar |

@@ -33,6 +33,7 @@ pub fn reader_commands() -> Vec<Entry> {
         a("Contents", "t", Toc),
         a("Search in book", "/", Search),
         a("Highlights and notes", "A", Highlights),
+        a("Highlights in all books", "", AllNotes),
         a("Bookmarks", "'", Bookmarks),
         a("Bookmark this page", "m", ToggleBookmark),
         a("Select text from the keyboard", "v", Visual),
@@ -72,6 +73,7 @@ pub fn library_commands() -> Vec<Entry> {
     vec![
         a("Open", "enter", Open),
         a("Continue reading", "c", Resume(0)),
+        a("Highlights in all books", "A", AllNotes),
         a("Filter books", "/", Filter),
         a("Sort by…", "o", Sort),
         a("Next shelf", "tab", NextShelf),

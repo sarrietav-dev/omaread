@@ -8,6 +8,7 @@ mod keys;
 mod library_view;
 mod lookup_view;
 mod mpris;
+mod notes_view;
 mod palette;
 mod reader;
 mod search_view;

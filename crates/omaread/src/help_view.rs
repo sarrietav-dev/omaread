@@ -13,6 +13,7 @@ fn sections(context: Context) -> Vec<(&'static str, Context, Vec<Row>)> {
             ("Move left", Move(-1, 0), &["h", "left"]), ("Move right", Move(1, 0), &["l", "right"]),
             ("Move down", Move(0, 1), &["j", "down"]), ("Move up", Move(0, -1), &["k", "up"]),
             ("Open book", Open, &["enter"]), ("Filter books", Filter, &["/"]),
+            ("Highlights and notes in all books", AllNotes, &["A"]),
             ("Continue the latest book", Resume(0), &["c"]), ("Continue book 1–6 in the row", Resume(1), &["1–6"]),
             ("Cycle sort", Sort, &["o"]), ("Next folder", NextShelf, &["tab"]),
             ("Previous folder", PrevShelf, &["shift+tab"]), ("Open / close folder", ToggleFolder, &["space"]),
