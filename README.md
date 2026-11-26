@@ -141,6 +141,7 @@ Reading
 | `n` / `N` | next / previous match (Esc clears) |
 | `:` | command palette: every command, fuzzy; also `:42%`, `:p 120`, `:ch 7`, `:export` |
 | select text | a card with colours, a note and `y` copy; `h` highlight, `1`–`5` color, `a` note, `d` dictionary, `w` Wikipedia, `t` translate |
+| `f` | label the links on the page; type a label to follow it (notes open in their card) |
 | `v` | select from the keyboard: `w`/`b` words, `(`/`)` sentences, `{`/`}` paragraphs, `j`/`k` lines, `o` the other end; Enter opens the card, `y` copies, Esc cancels |
 | click a highlight | `a` note, `1`–`5` recolor, `h` remove, `x` delete |
 | `s` | read aloud / pause (`]`/`[` next/previous sentence, `<`/`>` speed, `V` voices, Esc stop); on a selection, read from there |

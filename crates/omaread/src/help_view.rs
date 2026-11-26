@@ -35,6 +35,7 @@ fn sections(context: Context) -> Vec<(&'static str, Context, Vec<Row>)> {
                 ("Bigger text", Bigger, &["+", "="]), ("Smaller text", Smaller, &["-"]),
                 ("Cycle theme", CycleTheme, &["T"]), ("Status line", ToggleStatus, &["i"]),
                 ("Select text from the keyboard", Visual, &["v"]),
+                ("Follow a link (type its label)", Hints, &["f"]),
                 ("Command palette", CommandLine, &[":"]), ("Help", Help, &["?"]),
                 ("Back to library", Close, &["q"]),
             ]),

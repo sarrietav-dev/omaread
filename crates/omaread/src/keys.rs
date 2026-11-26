@@ -66,6 +66,10 @@ pub enum Action {
     Extend(Unit, bool),
     /// Visual mode: the other end of the selection moves from now on.
     SwapEnds,
+    /// Label the links on the page to follow one from the keyboard.
+    Hints,
+    /// A letter typed while the links are labelled.
+    HintKey(char),
     // Selection and annotations
     Highlight,
     Color(usize),
@@ -120,6 +124,8 @@ pub enum Context {
     Visual,
     /// A footnote's card is open.
     Note,
+    /// The links on the page are labelled, waiting for one to be typed.
+    Hints,
     /// The highlights or bookmarks panel is open.
     Annotations,
     /// The search results have the keys.
@@ -159,6 +165,7 @@ pub const NAMED: &[(&str, Action)] = &[
     ("bookmarks", Action::Bookmarks),
     ("visual", Action::Visual),
     ("other_end", Action::SwapEnds),
+    ("follow_link", Action::Hints),
     ("highlight", Action::Highlight),
     ("note", Action::Note),
     ("copy", Action::Copy),
@@ -195,6 +202,7 @@ pub fn context_by_name(name: &str) -> Option<Context> {
         "selection" => Context::Selection,
         "visual" => Context::Visual,
         "note" => Context::Note,
+        "hints" => Context::Hints,
         "annotations" => Context::Annotations,
         "search" => Context::Search,
         "lookup" => Context::Lookup,
@@ -300,7 +308,7 @@ impl Keymap {
                 (Some('i'), Context::Reader) => Some(Action::Forward),
                 _ => None,
             }
-        } else if ch == Some('g') && !matches!(context, Context::Selection | Context::Visual) {
+        } else if ch == Some('g') && !matches!(context, Context::Selection | Context::Visual | Context::Hints) {
             self.pending_g = true;
             return None;
         } else if ch == Some('d') && context == Context::Annotations {
@@ -315,6 +323,11 @@ impl Keymap {
                 Context::Selection => selection(key, ch),
                 Context::Visual => visual(key, ch),
                 Context::Note => note(key, ch),
+                Context::Hints => match (key, ch) {
+                    (Key::Escape, _) => Some(Action::Close),
+                    (_, Some(c)) if c.is_ascii_alphabetic() => Some(Action::HintKey(c)),
+                    _ => None,
+                },
                 Context::Annotations => annotations(key, ch),
                 Context::Search => search(key, ch),
                 Context::Lookup => lookup(key, ch),
@@ -492,6 +505,7 @@ fn reader(key: Key, ch: Option<char>, shift: bool) -> Option<Action> {
         'A' => Some(Action::Highlights),
         '\'' => Some(Action::Bookmarks),
         'v' => Some(Action::Visual),
+        'f' => Some(Action::Hints),
         'q' => Some(Action::Close),
         _ => None,
     }
@@ -820,6 +834,16 @@ mod tests {
         // g doesn't wait for a second key here: there's no gg in visual mode.
         assert_eq!(press(&mut map, Context::Visual, 'g'), None);
         assert_eq!(press(&mut map, Context::Visual, 'v'), Some(Action::Open));
+    }
+
+    #[test]
+    fn f_labels_links_and_letters_pick_one() {
+        let mut map = Keymap::default();
+        assert_eq!(press(&mut map, Context::Reader, 'f'), Some(Action::Hints));
+        assert_eq!(press(&mut map, Context::Hints, 'g'), Some(Action::HintKey('g')));
+        assert_eq!(press(&mut map, Context::Hints, 'a'), Some(Action::HintKey('a')));
+        let esc = Key::from_name("Escape").unwrap();
+        assert_eq!(map.press(Context::Hints, esc, ModifierType::empty()), Some(Action::Close));
     }
 
     #[test]

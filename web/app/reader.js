@@ -12,6 +12,7 @@ import { installSentenceSegmenter } from './sentences.js'
 import { readingOrder, textEdges } from './sections.js'
 import { resolveDocumentViewportUnits } from './viewport-units.js'
 import { isNoteRef, noteBlock, noteText } from './notes.js'
+import { hintLabels, matching } from './hints.js'
 
 const emit = msg => globalThis.webkit.messageHandlers.omaread.postMessage(JSON.stringify(msg))
 
@@ -433,6 +434,45 @@ const showNote = async (book, href, a) => {
     }
 }
 
+// --- Link hints -------------------------------------------------------------
+// `f` labels every link on screen; typing a label follows it, through the
+// same click handler the mouse uses (notes open in their card, links out
+// go to the browser).
+
+let hints = null // { targets: [{ label, el, mark }], typed }
+
+// What can be hinted, in reading order, with where it is on screen.
+const hintTargets = () => {
+    const found = []
+    for (const { doc } of view?.renderer?.getContents?.() ?? []) {
+        for (const el of doc.querySelectorAll('a[href]')) {
+            const range = doc.createRange()
+            range.selectNodeContents(el)
+            const rect = rectOf(range)
+            if (!rect || rect.width <= 0 || rect.height <= 0) continue
+            if (rect.x + rect.width < 0 || rect.x > innerWidth || rect.y + rect.height < 0 || rect.y > innerHeight) continue
+            found.push({ el, rect })
+        }
+    }
+    return found
+}
+
+const hintsClear = () => {
+    for (const t of hints?.targets ?? []) t.mark.remove()
+    hints = null
+}
+
+const hintsReport = () => emit({ type: 'hints', active: Boolean(hints) })
+
+const hintsShow = () => {
+    for (const t of hints.targets) {
+        const on = t.label.startsWith(hints.typed)
+        t.mark.style.display = on ? '' : 'none'
+        t.mark.textContent = t.label
+        t.mark.dataset.typed = hints.typed.length
+    }
+}
+
 const metadataOf = book => {
     const text = x => !x ? '' : typeof x === 'string' ? x : x[Object.keys(x)[0]] ?? ''
     const names = x => [x ?? []].flat().map(a => text(typeof a === 'string' ? a : a?.name)).filter(Boolean)
@@ -750,6 +790,53 @@ globalThis.omaread = {
         emit({ type: 'notice', message: view?.book.pageList?.length ? `No page ${label} in this book` : 'This book has no page numbers; try a percentage' })
     },
     goToFraction: f => view?.goToFraction(f),
+    hintsStart() {
+        hintsClear()
+        const found = hintTargets()
+        if (!found.length) {
+            emit({ type: 'notice', message: 'No links on this page' })
+            return hintsReport()
+        }
+        const labels = hintLabels(found.length)
+        // Solid colours: with Glassy Windows the page background is transparent.
+        const fg = palette?.surface ?? '#ffffff', bg = palette?.fg ?? '#101315'
+        const targets = found.map(({ el, rect }, i) => {
+            const mark = document.createElement('div')
+            mark.className = 'omaread-hint'
+            Object.assign(mark.style, {
+                position: 'fixed', left: `${Math.max(0, rect.x - 4)}px`, top: `${Math.max(0, rect.y - 4)}px`,
+                zIndex: 10, padding: '0 3px', font: 'bold 12px monospace', lineHeight: '16px',
+                color: fg, background: bg, pointerEvents: 'none', textTransform: 'lowercase',
+            })
+            document.body.append(mark)
+            return { label: labels[i], el, mark }
+        })
+        hints = { targets, typed: '' }
+        hintsShow()
+        hintsReport()
+    },
+    hintsKey(key) {
+        if (!hints) return
+        const typed = hints.typed + String(key).toLowerCase()
+        const left = matching(hints.targets, typed)
+        if (!left.length) {
+            hintsClear()
+            return hintsReport()
+        }
+        if (left.length === 1 && left[0].label === typed) {
+            const { el } = left[0]
+            hintsClear()
+            hintsReport()
+            el.click()
+            return
+        }
+        hints.typed = typed
+        hintsShow()
+    },
+    hintsCancel() {
+        hintsClear()
+        hintsReport()
+    },
     visualStart() {
         const range = view?.lastLocation?.range
         const doc = range?.startContainer?.ownerDocument

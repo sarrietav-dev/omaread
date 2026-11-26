@@ -126,6 +126,8 @@ pub struct Window {
     /// The keys visual mode takes, over the book while it's on.
     mode_hint: gtk::Label,
     footnote: Rc<FootnoteView>,
+    /// The page's links are labelled, waiting for one to be typed.
+    hints: Cell<bool>,
 }
 
 /// A place to open a book at, from `omaread open`.
@@ -426,6 +428,7 @@ impl Window {
             visual_then: Cell::new(None),
             mode_hint,
             footnote,
+            hints: Cell::new(false),
         });
         if let Some(speed) = win.db.as_ref().and_then(|db| db.setting(SPEED_SETTING).ok().flatten()).and_then(|s| ReadingSpeed::from_setting(&s)) {
             win.speed.set(speed);
@@ -617,6 +620,7 @@ impl Window {
     fn open_book(&self, book: Book) {
         self.pending_jump.take();
         self.end_visual();
+        self.hints.set(false);
         if let Some(error) = &book.error {
             self.show_toast(&format!("Can't open “{}”: {error}", book.title), true);
             return;
@@ -662,6 +666,7 @@ impl Window {
     /// Back to the library, keeping where we were.
     fn close_book(&self) {
         self.end_visual();
+        self.hints.set(false);
         self.close_overlays();
         self.lookup.close();
         self.stop_speech();
@@ -707,6 +712,8 @@ impl Window {
             Context::Settings
         } else if self.annotations_panel.is_open() {
             Context::Annotations
+        } else if self.hints.get() {
+            Context::Hints
         } else if self.footnote.is_open() {
             Context::Note
         } else if self.visual.get() {
@@ -759,6 +766,7 @@ impl Window {
                 }
             }
             Event::Visual { active, text } => self.show_visual(active, &text),
+            Event::Hints { active } => self.hints.set(active),
             Event::Footnote { href, text, rect } => {
                 self.close_selection();
                 self.footnote.show(&href, &text, rect, self.page_size());
@@ -2268,6 +2276,15 @@ impl Window {
                 self.reader.call("visualDone", "");
             }
             (Context::Visual, Action::Close) => self.end_visual(),
+            (Context::Reader, Action::Hints) => {
+                self.close_selection();
+                self.reader.call("hintsStart", "");
+            }
+            (Context::Hints, Action::HintKey(c)) => self.reader.call("hintsKey", &serde_json::to_string(&c.to_string()).unwrap_or_default()),
+            (Context::Hints, Action::Close) => {
+                self.hints.set(false);
+                self.reader.call("hintsCancel", "");
+            }
             (Context::Note, Action::Move(_, dy)) => self.footnote.scroll(dy),
             (Context::Note, Action::Open) => {
                 let href = self.footnote.href();

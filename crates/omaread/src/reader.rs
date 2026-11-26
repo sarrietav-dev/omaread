@@ -51,6 +51,8 @@ pub enum Event {
         #[serde(default)]
         text: String,
     },
+    /// Link hints went up (`active`) or came down.
+    Hints { active: bool },
     /// A link to a footnote was followed: the note, to show in a card.
     Footnote {
         href: String,
